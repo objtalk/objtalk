@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/reset.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/site.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/button.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/container.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/card.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/icon.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/menu.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/semantic-ui/components/message.min.css" />
+		<link rel="stylesheet" href="/_assets/vendor/highlightjs/tomorrow.css" />
+		<title>objtalk</title>
+
+		<style>
+			body { padding-top: 70px; }
+			body.online #offline { display: none; }
+			
+			.anchor { position: relative; top: -70px; }
+			
+			.ui.fixed.menu { border-top: none; }
+			
+			.page { display: none; }
+			
+			.page-card { width: 100% !important; }
+			
+			@media (min-width: 768px) {
+				.object { flex-direction: row !important; margin-left: 0 !important; margin-right: 0 !important; }
+				.object .content { flex-basis: 30%; }
+				.object .object-value { flex-basis: 70%; }
+				.object .object-value { border-top: none !important; border-left: 1px solid rgba(34, 36, 38, .1) !important; }
+			}
+			
+			.object .object-value { padding: 0 !important; }
+			.object .object-value pre { margin: 0; }
+			.object .object-value pre code {
+				padding: 10px;
+				max-height: 300px;
+				overflow-y: auto;
+				border-top-right-radius: 5px;
+				border-bottom-right-radius: 5px;
+			}
+			
+			#log-messages {
+				height: 500px;
+				overflow-y: auto;
+				font-family: monospace;
+			}
+			
+			.log-message {
+				white-space: nowrap;
+				text-overflow: clip;
+				overflow: hidden;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="ui fixed menu">
+			<div class="ui container">
+				<div class="header item">objtalk</div>
+				<a href="#objects" class="item page-menu-item" data-page="objects">Objects</a>
+				<a href="#log" class="item page-menu-item" data-page="log">Log</a>
+			</div>
+		</div>
+		
+		<div class="ui container">
+			<div class="ui negative message" id="offline">
+				<p>offline</p>
+			</div>
+			
+			<div class="page" data-page="objects">
+				<div class="ui one cards" id="object-cards"></div>
+			</div>
+			<div class="page" data-page="log">
+				<div class="ui card page-card">
+					<div class="content">
+						<div class="header">Log</div>
+					</div>
+					<div class="content" id="log-messages"></div>
+					<div class="extra content">
+						<button class="ui compact labeled icon button" type="button" id="log-start-stop"><i class="pause icon"></i> <span>stop</span></button>
+					</div>
+				</div>
+			</div>
+		</div>
+		
+		<script type="text/html" id="template-object-card">
+			<div class="ui card object">
+				<div class="content">
+					<a class="anchor"></a>
+					<a class="header object-name"></a>
+					<div class="meta">
+						<span class="object-last-modified"></span>
+					</div>
+				</div>
+				<div class="content object-value"><pre><code class="language-js"></code></pre></div>
+			</div>
+		</script>
+		
+		<script type="text/html" id="template-log-message-client-connect">
+			<div class="log-message">
+				<span class="log-message-client"></span> connect
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-client-disconnect">
+			<div class="log-message">
+				<span class="log-message-client"></span> disconnect
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-get">
+			<div class="log-message">
+				<span class="log-message-client"></span> get <span class="log-message-pattern"></span>
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-query">
+			<div class="log-message">
+				<span class="log-message-client"></span> query <span class="log-message-pattern"></span> -> <span class="log-message-query"></span>
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-unsubscribe">
+			<div class="log-message">
+				<span class="log-message-client"></span> unsubscribe <span class="log-message-query"></span>
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-set">
+			<div class="log-message">
+				<span class="log-message-client"></span> set <a class="log-message-object"></a> <span class="log-message-value"></span>
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-patch">
+			<div class="log-message">
+				<span class="log-message-client"></span> patch <a class="log-message-object"></a> <span class="log-message-value"></span>
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-remove">
+			<div class="log-message">
+				<span class="log-message-client"></span> remove <a class="log-message-object"></a>
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-emit">
+			<div class="log-message">
+				<span class="log-message-client"></span> emit <a class="log-message-object"></a> <span class="log-message-event"></span> <span class="log-message-data"></span>
+			</div>
+		</script>
+		
+		<script src="/_assets/vendor/highlightjs/highlight.pack.js"></script>
+		<script type="module">
+			import { Connection, WebsocketTransport } from "/_assets/objtalk.js";
+			import ObjectsPage from "/_assets/objects-page.js";
+			import LogPage from "/_assets/log-page.js";
+			
+			let url = "ws://" + window.location.host;
+			let conn = new Connection(() => new WebsocketTransport(new WebSocket(url)));
+			
+			conn.addEventListener("open", _ => document.body.classList.add("online"));
+			conn.addEventListener("close", _ => document.body.classList.remove("online"));
+			
+			let system = conn.query("$system");
+			
+			let pages = {
+				objects: new ObjectsPage(conn),
+				log: new LogPage(conn, system),
+			};
+			
+			function setActivePage(path) {
+				let page = path.split("/")[0];
+				
+				if (!pages.hasOwnProperty(page)) {
+					page = "objects";
+				}
+				
+				for (let p of document.querySelectorAll(".page")) {
+					p.style.display = "none";
+				}
+				
+				for (let p of document.querySelectorAll(".page-menu-item")) {
+					p.classList.remove("active");
+				}
+				
+				document.querySelector(".page[data-page='"+page+"']").style.display = "block";
+				document.querySelector(".page-menu-item[data-page='"+page+"']").classList.add("active");
+				
+				let target = document.getElementById(path);
+				if (target) {
+					let rect = target.getBoundingClientRect();
+					window.scrollTo(window.pageXOffset, window.pageYOffset + rect.top);
+				} else {
+					window.scrollTo(0, 0);
+				}
+			}
+			
+			window.addEventListener("hashchange", () => {
+				setActivePage(location.hash.slice(1));
+			});
+			
+			if (location.hash == "") {
+				location.hash = "#objects";
+			} else {
+				setActivePage(location.hash.slice(1));
+			}
+			
+			window.conn = conn;
+		</script>
+	</body>
+</html>

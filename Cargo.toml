@@ -1,0 +1,65 @@
+[package]
+name = "objtalk"
+version = "0.1.0"
+description = "a simple object broker"
+readme = "README.md"
+homepage = "https://github.com/objtalk/objtalk"
+repository = "https://github.com/objtalk/objtalk"
+authors = ["hinzundcode <chris-git@appucino.de>"]
+license = "MIT"
+edition = "2018"
+keywords = ["messaging", "iot", "broker"]
+default-run = "objtalk-server"
+include = ["src/**/*", "Cargo.toml"]
+build = "build.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[[bin]]
+name = "objtalk-server"
+required-features = ["server"]
+
+[[bin]]
+name = "objtalk-cli"
+required-features = ["client"]
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "3.0.0-beta.2", default-features = false, features = ["std", "derive"] }
+colored = { version = "2.0", optional = true }
+futures = "0.3"
+hyper = { version = "0.14", default-features = false, optional = true }
+hyper-tungstenite = { version = "0.3", optional = true }
+regex = { version = "1", optional = true }
+rusqlite = { version = "0.25", default-features = false, optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+thiserror = "1.0"
+tokio = { version = "1.5", features = ["rt", "rt-multi-thread", "macros", "net"] }
+tokio-util = { version = "0.6", features = ["codec"] }
+toml = { version = "0.5", optional = true }
+uuid = { version = "0.8", default-features = false, features = ["serde", "v4"] }
+lazy_static = { version = "1.4", optional = true }
+
+[build-dependencies]
+deflate = "0.9"
+
+[features]
+default = ["server", "client", "sqlite-backend"]
+server = [
+	"colored", "toml", "regex",
+	"hyper/http1", "hyper/server", "hyper/runtime", "hyper/stream",
+	"hyper-tungstenite", "lazy_static"
+]
+client = [
+	"hyper/http1", "hyper/client"
+]
+sqlite-backend = [
+	"rusqlite/bundled", "rusqlite/chrono"
+]
+
+[profile.release]
+codegen-units = 1
+incremental = false
+panic = "abort"
+lto = true

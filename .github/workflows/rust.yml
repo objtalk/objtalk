@@ -1,0 +1,36 @@
+name: Rust
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup
+      run: |
+        sudo apt install -y musl-tools
+        rustup target add x86_64-unknown-linux-musl
+    - name: Run tests
+      run: cargo test --verbose
+    - name: Build x86_64
+      run: cargo build --verbose --release --target=x86_64-unknown-linux-musl
+    - name: Release
+      uses: "marvinpinto/action-automatic-releases@latest"
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        automatic_release_tag: "latest"
+        prerelease: true
+        title: "Development Build"
+        files: |
+          target/x86_64-unknown-linux-musl/release/objtalk-server
+          target/x86_64-unknown-linux-musl/release/objtalk-cli
