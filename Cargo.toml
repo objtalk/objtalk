@@ -1,17 +1,23 @@
 [package]
 name = "objtalk"
 version = "0.1.0"
+authors = ["hinzundcode <chris-git@appucino.de>"]
+license = "MIT"
 description = "a simple object broker"
 readme = "README.md"
 homepage = "https://github.com/objtalk/objtalk"
 repository = "https://github.com/objtalk/objtalk"
-authors = ["hinzundcode <chris-git@appucino.de>"]
-license = "MIT"
 edition = "2018"
 keywords = ["messaging", "iot", "broker"]
 default-run = "objtalk-server"
-include = ["src/**/*", "Cargo.toml"]
 build = "build.rs"
+include = [
+	"src/**/*.rs",
+	"build.rs",
+	"Cargo.toml",
+	"admin",
+	"!**/.DS_Store"
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
