@@ -1,6 +1,6 @@
 [package]
 name = "objtalk"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["hinzundcode <chris-git@appucino.de>"]
 license = "MIT"
 description = "a simple object broker"
