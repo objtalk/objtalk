@@ -23,13 +23,26 @@ fn find_files_recursive(dir: PathBuf, files: &mut Vec<PathBuf>) {
 	}
 }
 
-fn build_version_string() {
+fn get_git_hash() -> String {
+	if let Ok(contents) = fs::read_to_string(".cargo_vcs_info.json") {
+		if let Some(line) = contents.lines().map(|line| line.trim()).filter(|line| line.starts_with("\"sha1\":")).nth(0) {
+			if let Some(hash) = line.split("\"").nth(3) {
+				return hash.to_string();
+			}
+		}
+	}
+	
 	let output = Command::new("git")
 		.arg("rev-parse")
 		.arg("HEAD")
 		.output()
 		.unwrap();
-	let git_hash = &str::from_utf8(&output.stdout).unwrap()[..7];
+	
+	str::from_utf8(&output.stdout).unwrap().to_string()
+}
+
+fn build_version_string() {
+	let git_hash = &get_git_hash()[..7];
 	let version = env!("CARGO_PKG_VERSION");
 	let target = env::var("TARGET").unwrap();
 	let version_string = format!("v{} ({}, {})", version, git_hash, target);
