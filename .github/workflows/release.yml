@@ -1,8 +1,9 @@
 name: Release Build
 
 on:
-  tags:
-    - "v*"
+  push:
+    tags:
+      - "v*"
 
 env:
   CARGO_TERM_COLOR: always
