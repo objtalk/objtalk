@@ -3,8 +3,6 @@ name: Build
 on:
   push:
     branches: [ master ]
-  pull_request:
-    branches: [ master ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -22,8 +20,12 @@ jobs:
         rustup target add x86_64-unknown-linux-musl
     - name: Run tests
       run: cargo test --verbose
-    - name: Build x86_64
-      run: cargo build --verbose --release --target=x86_64-unknown-linux-musl
+    - name: Build linux-x86_64
+      run: |
+        cargo build --verbose --release --target=x86_64-unknown-linux-musl
+        strip target/x86_64-unknown-linux-musl/release/objtalk-server
+        strip target/x86_64-unknown-linux-musl/release/objtalk-cli
+        tar cfvz objtalk-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-musl/release objtalk-server objtalk-cli
     - name: Release
       uses: "marvinpinto/action-automatic-releases@latest"
       with:
@@ -32,5 +34,4 @@ jobs:
         prerelease: true
         title: "Development Build"
         files: |
-          target/x86_64-unknown-linux-musl/release/objtalk-server
-          target/x86_64-unknown-linux-musl/release/objtalk-cli
+          objtalk-linux-x86_64.tar.gz
