@@ -1,7 +1,7 @@
 # objtalk
 
 [![Documentation](https://docs.rs/objtalk/badge.svg)](https://docs.rs/objtalk)
-[![Automated Builds](https://github.com/objtalk/objtalk/actions/workflows/rust.yml/badge.svg)](https://github.com/objtalk/objtalk/actions/workflows/rust.yml)
+[![Automated Builds](https://github.com/objtalk/objtalk/actions/workflows/build.yml/badge.svg)](https://github.com/objtalk/objtalk/actions/workflows/build.yml)
 
 ## Usage
 
