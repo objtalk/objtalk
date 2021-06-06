@@ -6,7 +6,7 @@ function renderObject(elem, object) {
 	
 	elem.querySelector(".object-name").innerText = object.name;
 	elem.querySelector(".object-name").href = "#objects/" + object.name;
-	elem.querySelector(".object-value code").innerText = inspect(object.value);
+	elem.querySelector(".object-value code").innerText = inspect(object.value, false, null);
 	elem.querySelector(".object-last-modified").innerText = new Date(object.lastModified).toLocaleString();
 	
 	hljs.highlightElement(elem.querySelector(".object-value code"));
