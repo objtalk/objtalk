@@ -400,6 +400,8 @@ impl Server {
 							object: object.clone()
 						};
 						let _ = client.inbox_tx.unbounded_send(msg);
+						
+						query.objects.remove(&name);
 					}
 				}
 			}
@@ -700,6 +702,18 @@ mod tests {
 		let msg = client.inbox_try_next().unwrap().unwrap();
 		
 		if let Message::QueryRemove { query_id: msg_query_id, object } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object.name, "foo");
+			assert_eq!(object.value, json!({ "bar": 1 }));
+		} else {
+			assert!(false);
+		}
+		
+		server.set("foo", json!({ "bar": 1 }), &client).unwrap();
+		
+		let msg = client.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::QueryAdd { query_id: msg_query_id, object } = msg {
 			assert_eq!(msg_query_id, query_id);
 			assert_eq!(object.name, "foo");
 			assert_eq!(object.value, json!({ "bar": 1 }));
