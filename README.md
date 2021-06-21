@@ -114,7 +114,7 @@ $ objtalk-cli get '*'
 over http:
 
 ```
-$ curl 127.0.0.1:3000/query?pattern=* -d {"value":42}
+$ curl 127.0.0.1:3000/query?pattern=*
 ```
 
 ### query `pattern`
