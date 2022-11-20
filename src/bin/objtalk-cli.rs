@@ -1,12 +1,3 @@
-//#![allow(dead_code)]
-//#![allow(unused_variables)]
-//#![allow(unused_assignments)]
-//#![allow(unused_mut)]
-//#![allow(unused_imports)]
-//#![allow(unused_macros)]
-//#![allow(unreachable_code)]
-//#![allow(unreachable_patterns)]
-
 use clap::Clap;
 use objtalk::client::{HttpClient, Error};
 
@@ -14,8 +5,6 @@ use objtalk::client::{HttpClient, Error};
 $ objtalk get <pattern>
 $ objtalk set <name> <value>
 */
-
-//type Error = Box<dyn std::error::Error + Send + Sync>;
 
 const VERSION_STRING: &'static str = env!("VERSION_STRING");
 

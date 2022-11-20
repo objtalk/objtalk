@@ -16,9 +16,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use tungstenite::Message as WebsocketMessage;
 
-// https://github.com/oshunter/fuchsia/blob/2196fc8c176d01969466b97bba3f31ec55f7767b/src/lib/http-sse/src/server.rs
-// https://github.com/openpowerquality/opq/blob/d3d9f051b5096809b1e06d8f483fd4ff9dc861f2/box/Software/Triggering/src/sse.rs
-
 fn remove_first_slash(string: &str) -> &str {
 	let mut chars = string.chars();
 	chars.next();

@@ -1,12 +1,3 @@
-//#![allow(dead_code)]
-//#![allow(unused_variables)]
-//#![allow(unused_assignments)]
-//#![allow(unused_mut)]
-//#![allow(unused_imports)]
-//#![allow(unused_macros)]
-//#![allow(unreachable_code)]
-//#![allow(unreachable_patterns)]
-
 use clap::Clap;
 use futures::future::join_all;
 use futures::FutureExt;

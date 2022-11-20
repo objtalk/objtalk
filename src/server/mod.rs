@@ -86,6 +86,7 @@ struct Query {
 
 #[derive(Debug)]
 pub struct ClientState {
+	#[allow(dead_code)]
 	id: Uuid,
 	queries: Vec<Query>,
 	inbox_tx: UnboundedSender<Message>,
