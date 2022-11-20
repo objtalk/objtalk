@@ -115,7 +115,7 @@
 		</script>
 		<script type="text/html" id="template-log-message-query">
 			<div class="log-message">
-				<span class="log-message-client"></span> query <span class="log-message-pattern"></span> -> <span class="log-message-query"></span>
+				<span class="log-message-client"></span> query <span class="log-message-pattern"></span> <span class="log-message-provide-rpc"></span> -> <span class="log-message-query"></span>
 			</div>
 		</script>
 		<script type="text/html" id="template-log-message-unsubscribe">
@@ -141,6 +141,17 @@
 		<script type="text/html" id="template-log-message-emit">
 			<div class="log-message">
 				<span class="log-message-client"></span> emit <a class="log-message-object"></a> <span class="log-message-event"></span> <span class="log-message-data"></span>
+			</div>
+		</script>
+		<script type="text/html" id="template-log-message-invoke">
+			<div class="log-message">
+				<span class="log-message-client"></span> invoke <span class="log-message-invocation"></span> <a class="log-message-object"></a> <span class="log-message-method"></span> <span class="log-message-args"></span>
+			</div>
+		</script>
+		
+		<script type="text/html" id="template-log-message-invoke-result">
+			<div class="log-message">
+				<span class="log-message-client"></span> invoke-result <span class="log-message-invocation"></span> <span class="log-message-result"></span>
 			</div>
 		</script>
 		

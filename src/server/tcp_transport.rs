@@ -21,9 +21,10 @@ async fn handle_connection(stream: TcpStream, _addr: SocketAddr, server: Server)
 			result = lines.next() => match result {
 				Some(Ok(line)) => {
 					if let Ok(request) = serde_json::from_str::<RequestMessage>(&line) {
-						let response = handle_message(request, &client, server.clone());
-						let json_string = serde_json::to_string(&response).unwrap();
-						lines.send(json_string).await.unwrap();
+						if let Some(response) = handle_message(request, &client, server.clone()) {
+							let json_string = serde_json::to_string(&response).unwrap();
+							lines.send(json_string).await.unwrap();
+						}
 					}
 				},
 				Some(Err(e)) => {

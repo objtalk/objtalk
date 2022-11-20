@@ -32,6 +32,10 @@ pub enum Error {
 	QueryNotFound,
 	#[error("client not found")]
 	ClientNotFound,
+	#[error("not invocable")]
+	ObjectNotInvocable,
+	#[error("invocation not found")]
+	InvocationNotFound,
 }
 
 fn validate_object_name(name: &str) -> Result<(), Error> {
@@ -74,13 +78,33 @@ pub enum Message {
 		object: String,
 		event: String,
 		data: Value,
-	}
+	},
+	QueryInvocation {
+		query_id: Uuid,
+		invocation_id: Uuid,
+		object: String,
+		method: String,
+		args: Value,
+	},
+	InvocationResult {
+		request_id: Value,
+		result: Result<Value, Error>,
+	},
+}
+
+#[derive(Debug, Clone)]
+struct Invocation {
+	id: Uuid,
+	client_id: Uuid,
+	request_id: Value,
+	query_id: Uuid,
 }
 
 #[derive(Debug)]
 struct Query {
 	id: Uuid,
 	pattern: Pattern,
+	provide_rpc: bool,
 	objects: HashSet<String>,
 }
 
@@ -89,6 +113,7 @@ pub struct ClientState {
 	#[allow(dead_code)]
 	id: Uuid,
 	queries: Vec<Query>,
+	invocations: Vec<Invocation>,
 	inbox_tx: UnboundedSender<Message>,
 }
 
@@ -153,6 +178,40 @@ impl State {
 		Ok(())
 	}
 	
+	fn invoke(&mut self, object: String, method: String, args: Value, invocation_id: Uuid, request_id: Value, client: &Client) -> Result<(), Error> {
+		if self.objects.get(&object).is_none() {
+			return Err(Error::ObjectNotFound)
+		}
+		
+		for responder in self.clients.values_mut() {
+			for query in &mut responder.queries {
+				if query.provide_rpc {
+					if query.objects.contains(&object) {
+						responder.invocations.push(Invocation {
+							id: invocation_id,
+							client_id: client.id,
+							request_id,
+							query_id: query.id,
+						});
+						
+						let msg = Message::QueryInvocation {
+							query_id: query.id,
+							invocation_id,
+							object: object.to_string(),
+							method: method.to_string(),
+							args: args.clone(),
+						};
+						let _ = responder.inbox_tx.unbounded_send(msg);
+						
+						return Ok(())
+					}
+				}
+			}
+		}
+		
+		Err(Error::ObjectNotInvocable)
+	}
+	
 	fn log(&mut self, message: LogMessage) {
 		self.logger.log(&message);
 		
@@ -198,6 +257,7 @@ impl Server {
 		let client = ClientState {
 			id,
 			queries: vec![],
+			invocations: vec![],
 			inbox_tx: tx,
 		};
 		
@@ -213,7 +273,19 @@ impl Server {
 		
 		state.log(LogMessage::ClientDisconnect { client: client_id });
 		
-		state.clients.remove(&client_id);
+		let client = state.clients.remove(&client_id);
+		
+		if let Some(client) = client {
+			for invocation in client.invocations {
+				if let Some(client) = state.clients.get_mut(&invocation.client_id) {
+					let msg = Message::InvocationResult {
+						request_id: invocation.request_id,
+						result: Err(Error::ObjectNotInvocable),
+					};
+					let _ = client.inbox_tx.unbounded_send(msg);
+				}
+			}
+		}
 	}
 	
 	pub fn set(&self, name: &str, value: Value, client: &Client) -> Result<(), Error> {
@@ -340,12 +412,12 @@ impl Server {
 		}).cloned().collect()
 	}
 	
-	pub fn query(&self, pattern: &Pattern, client: &Client) -> Result<(Uuid, Vec<Object>),Error> {
+	pub fn query(&self, pattern: &Pattern, provide_rpc: bool, client: &Client) -> Result<(Uuid, Vec<Object>),Error> {
 		let mut state = self.shared.state.lock().unwrap();
 		
 		let id = Uuid::new_v4();
 		
-		state.log(LogMessage::Query { pattern: pattern.string.clone(), query: id, client: client.id });
+		state.log(LogMessage::Query { pattern: pattern.string.clone(), provide_rpc, query: id, client: client.id });
 		
 		let objects: Vec<Object> = state.objects.values().filter(|object| {
 			pattern.matches(&object.name)
@@ -355,6 +427,7 @@ impl Server {
 			client.queries.push(Query {
 				id,
 				pattern: pattern.clone(),
+				provide_rpc,
 				objects: HashSet::from_iter(objects.iter().map(|object| object.name.clone())),
 			});
 			Ok((id, objects))
@@ -368,15 +441,38 @@ impl Server {
 		
 		state.log(LogMessage::Unsubscribe { query: query_id, client: client.id });
 		
-		let client = state.clients.get_mut(&client.id).unwrap();	
-		
-		if let Some(index) = client.queries.iter().position(|query| query.id == query_id) {
-			client.queries.remove(index);
+		let mut invocations: Vec<Invocation> = vec![];
+		{
+			let client = state.clients.get_mut(&client.id).unwrap();
+			
+			if let Some(index) = client.queries.iter().position(|query| query.id == query_id) {
+				client.queries.remove(index);
 				
-			Ok(())
-		} else {
-			Err(Error::QueryNotFound)
+				// TODO: optimize away the vector and cloning
+				client.invocations.retain(|invocation| {
+					if invocation.query_id == query_id {
+						invocations.push(invocation.clone());
+						return false;
+					} else {
+						return true;
+					}
+				});
+			} else {
+				return Err(Error::QueryNotFound)
+			}
 		}
+		
+		for invocation in invocations {
+			if let Some(client) = state.clients.get_mut(&invocation.client_id) {
+				let msg = Message::InvocationResult {
+					request_id: invocation.request_id,
+					result: Err(Error::ObjectNotInvocable),
+				};
+				let _ = client.inbox_tx.unbounded_send(msg);
+			}
+		}
+		
+		Ok(())
 	}
 	
 	pub fn remove(&self, name: String, client: &Client) -> bool {
@@ -421,6 +517,51 @@ impl Server {
 		state.log(LogMessage::Emit { object: object.clone(), event: event.clone(), data: data.clone(), client: client.id });
 		
 		state.emit(object, event, data)
+	}
+	
+	pub fn invoke(&self, object: String, method: String, args: Value, request_id: Value, client: &Client) -> Result<(), Error> {
+		let mut state = self.shared.state.lock().unwrap();
+		
+		validate_object_name(&object)?;
+		
+		let invocation_id = Uuid::new_v4();
+		
+		state.log(LogMessage::Invoke { object: object.clone(), method: method.clone(), args: args.clone(), invocation_id: invocation_id.clone(), client: client.id });
+		
+		state.invoke(object, method, args, invocation_id, request_id, client)
+	}
+	
+	pub fn invoke_result(&self, invocation_id: Uuid, result: Value, client: &Client) -> Result<(), Error> {
+		let mut state = self.shared.state.lock().unwrap();
+		
+		state.log(LogMessage::InvokeResult { invocation_id, result: result.clone(), client: client.id });
+		
+		let invocation: Option<Invocation> = (|| {
+			let client = state.clients.get_mut(&client.id).unwrap();
+			
+			if let Some(index) = client.invocations.iter().position(|invocation| invocation.id == invocation_id) {
+				Some(client.invocations.remove(index))
+			} else {
+				None
+			}
+		})();
+		
+		if let Some(invocation) = invocation {
+			if let Some(client) = state.clients.get_mut(&invocation.client_id) {
+				let msg = Message::InvocationResult {
+					request_id: invocation.request_id,
+					result: Ok(result),
+				};
+				let _ = client.inbox_tx.unbounded_send(msg);
+				
+				Ok(())
+			} else {
+				// client disconnected -> ignore
+				Ok(())
+			}
+		} else {
+			Err(Error::InvocationNotFound)
+		}
 	}
 }
 
@@ -585,7 +726,7 @@ mod tests {
 		
 		server.set("livingroom/temperature", json!({ "temp": 20.3 }), &client1).unwrap();
 		
-		let (query_id, objects) = server.query(&Pattern::compile("+/temperature").unwrap(), &client2).unwrap();
+		let (query_id, objects) = server.query(&Pattern::compile("+/temperature").unwrap(), false, &client2).unwrap();
 		
 		assert_eq!(objects.len(), 1);
 		assert_eq!(objects[0].name, "livingroom/temperature");
@@ -647,7 +788,7 @@ mod tests {
 		
 		server.set("livingroom/temperature", json!({ "temp": 20.3 }), &client1).unwrap();
 		
-		let (query_id, _) = server.query(&Pattern::compile("+/temperature").unwrap(), &client2).unwrap();
+		let (query_id, _) = server.query(&Pattern::compile("+/temperature").unwrap(), false, &client2).unwrap();
 		
 		server.set("livingroom/temperature", json!({ "temp": 20.4 }), &client1).unwrap();
 		
@@ -696,7 +837,7 @@ mod tests {
 		
 		let mut client = server.client_connect();
 		
-		let (query_id, _) = server.query(&Pattern::compile("*").unwrap(), &client).unwrap();
+		let (query_id, _) = server.query(&Pattern::compile("*").unwrap(), false, &client).unwrap();
 		
 		server.remove("foo".to_string(), &client);
 		
@@ -734,7 +875,7 @@ mod tests {
 		
 		let mut client = server.client_connect();
 		
-		let (query_id, _) = server.query(&Pattern::compile("*").unwrap(), &client).unwrap();
+		let (query_id, _) = server.query(&Pattern::compile("*").unwrap(), false, &client).unwrap();
 		
 		server.emit("gamepad".to_string(), "buttonpress".to_string(), json!({ "button": "a" }), &client).unwrap();
 		
@@ -760,5 +901,140 @@ mod tests {
 		let result = server.emit("gamepad".to_string(), "buttonpress".to_string(), json!({ "button": "a" }), &client);
 		
 		assert_eq!(result, Err(Error::ObjectNotFound));
+	}
+	
+	#[test]
+	fn test_invoke_doesnt_exist() {
+		let server = create_server();
+		let client = server.client_connect();
+		
+		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &client);
+		
+		assert_eq!(result, Err(Error::ObjectNotFound));
+	}
+	
+	#[test]
+	fn test_invoke_not_invokable() {
+		let server = create_server();
+		let client = server.client_connect();
+		
+		server.set("lamp", json!({ "on": false }), &client).unwrap();
+		
+		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &client);
+		
+		assert_eq!(result, Err(Error::ObjectNotInvocable));
+	}
+	
+	#[test]
+	fn test_invoke() {
+		let server = create_server();
+		let mut provider = server.client_connect();
+		let mut consumer = server.client_connect();
+		
+		server.set("lamp", json!({ "on": false }), &provider).unwrap();
+		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &provider).unwrap();
+		
+		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &consumer);
+		assert_eq!(result, Ok(()));
+		
+		let msg = provider.inbox_try_next().unwrap().unwrap();
+		
+		let invocation_id;
+		
+		if let Message::QueryInvocation { query_id: msg_query_id, invocation_id: msg_invocation_id, object, method, args } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object, "lamp");
+			assert_eq!(method, "setState");
+			assert_eq!(args, json!({ "on": true }));
+			invocation_id = msg_invocation_id;
+		} else {
+			assert!(false);
+			return;
+		}
+		
+		server.invoke_result(invocation_id, json!({ "success": true }), &provider).unwrap();
+		
+		let msg = consumer.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::InvocationResult { request_id, result } = msg {
+			assert_eq!(request_id, json!(1));
+			assert_eq!(result, Ok(json!({ "success": true })));
+		} else {
+			assert!(false);
+		}
+	}
+	
+	#[test]
+	fn test_invoke_client_disconnect() {
+		let server = create_server();
+		let mut provider = server.client_connect();
+		let mut consumer = server.client_connect();
+		
+		server.set("lamp", json!({ "on": false }), &provider).unwrap();
+		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &provider).unwrap();
+		
+		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &consumer);
+		assert_eq!(result, Ok(()));
+		
+		let msg = provider.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::QueryInvocation { query_id: msg_query_id, invocation_id: _invocation_id, object, method, args } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object, "lamp");
+			assert_eq!(method, "setState");
+			assert_eq!(args, json!({ "on": true }));
+		} else {
+			assert!(false);
+			return;
+		}
+		
+		// disconnect before providing an invocation result
+		drop(provider);
+		
+		let msg = consumer.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::InvocationResult { request_id, result } = msg {
+			assert_eq!(request_id, json!(1));
+			assert_eq!(result, Err(Error::ObjectNotInvocable));
+		} else {
+			assert!(false);
+		}
+	}
+	
+	#[test]
+	fn test_invoke_unsubscribe() {
+		let server = create_server();
+		let mut provider = server.client_connect();
+		let mut consumer = server.client_connect();
+		
+		server.set("lamp", json!({ "on": false }), &provider).unwrap();
+		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &provider).unwrap();
+		
+		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &consumer);
+		assert_eq!(result, Ok(()));
+		
+		let msg = provider.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::QueryInvocation { query_id: msg_query_id, invocation_id: _invocation_id, object, method, args } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object, "lamp");
+			assert_eq!(method, "setState");
+			assert_eq!(args, json!({ "on": true }));
+		} else {
+			assert!(false);
+			return;
+		}
+		
+		// unsubscribe before providing an invocation result
+		server.unsubscribe(query_id, &provider).unwrap();
+		
+		let msg = consumer.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::InvocationResult { request_id, result } = msg {
+			assert_eq!(request_id, json!(1));
+			assert_eq!(result, Err(Error::ObjectNotInvocable));
+		} else {
+			assert!(false);
+		}
 	}
 }

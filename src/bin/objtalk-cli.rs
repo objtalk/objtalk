@@ -37,7 +37,12 @@ enum Command {
 		object: String,
 		event: String,
 		data: String,
-	}
+	},
+	Invoke {
+		object: String,
+		method: String,
+		args: String,
+	},
 }
 
 async fn do_main() -> Result<(), Error> {
@@ -73,7 +78,13 @@ async fn do_main() -> Result<(), Error> {
 			let data = serde_json::from_str(&data)?;
 			client.emit(object, event, data).await?;
 			Ok(())
-		}
+		},
+		Command::Invoke { object, method, args } => {
+			let args = serde_json::from_str(&args)?;
+			let result = client.invoke(object, method, args).await?;
+			println!("{}", serde_json::to_string_pretty(&result).unwrap());
+			Ok(())
+		},
 	}
 }
 

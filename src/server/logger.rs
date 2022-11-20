@@ -15,10 +15,15 @@ pub enum LogMessage {
 	Set { object: String, value: Value, client: Uuid },
 	Patch { object: String, value: Value, client: Uuid },
 	Get { pattern: String, client: Uuid },
-	Query { pattern: String, query: Uuid, client: Uuid },
+	#[serde(rename_all = "camelCase")]
+	Query { pattern: String, provide_rpc: bool, query: Uuid, client: Uuid },
 	Unsubscribe { query: Uuid, client: Uuid },
 	Remove { object: String, client: Uuid },
 	Emit { object: String, event: String, data: Value, client: Uuid },
+	#[serde(rename_all = "camelCase")]
+	Invoke { object: String, method: String, args: Value, invocation_id: Uuid, client: Uuid },
+	#[serde(rename_all = "camelCase")]
+	InvokeResult { invocation_id: Uuid, result: Value, client: Uuid },
 }
 
 pub trait Logger {
@@ -118,12 +123,14 @@ impl Logger for StdoutLogger {
 				self.colorer.borrow_mut().unassign_color(*client);
 			},
 			LogMessage::Get { pattern, client } => self.print(*client, format!("get {}", pattern)),
-			LogMessage::Query { pattern, query, client } => self.print(*client, format!("query {} -> {}", pattern, short_id(*query))),
+			LogMessage::Query { pattern, provide_rpc, query, client } => self.print(*client, format!("query {} -> {} (provide rpc: {})", pattern, short_id(*query), provide_rpc)),
 			LogMessage::Unsubscribe { query, client } => self.print(*client, format!("unsubscribe {}", short_id(*query))),
 			LogMessage::Set { object, value, client } => self.print(*client, format!("set {} {}", object, value)),
 			LogMessage::Patch { object, value, client } => self.print(*client, format!("patch {} {}", object, value)),
 			LogMessage::Remove { object, client } => self.print(*client, format!("remove {}", object)),
 			LogMessage::Emit { object, event, data, client } => self.print(*client, format!("emit {} {} {}", object, event, data)),
+			LogMessage::Invoke { object, method, args, invocation_id, client } => self.print(*client, format!("invoke {} {} {} {}", short_id(*invocation_id), object, method, args)),
+			LogMessage::InvokeResult { invocation_id, result, client } => self.print(*client, format!("invoke-result {} {}", short_id(*invocation_id), result)),
 		}
 	}
 }

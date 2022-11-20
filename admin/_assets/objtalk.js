@@ -105,11 +105,34 @@ export class Connection extends EventEmitter {
 		return existed;
 	}
 	
-	query(pattern, listener) {
-		let query = new Query(pattern, this);
+	query(pattern, listener, options = {}) {
+		options = { provideRpc: false, ...options };
+		let query = new Query(pattern, options, this);
 		
 		if (listener)
 			query.addEventListener("update", () => listener(query.objects));
+		
+		return query;
+	}
+	
+	provide(pattern, listener, options = {}) {
+		options = { provideRpc: true, ...options };
+		let query = new Query(pattern, options, this);
+		
+		query.addEventListener("invocation", event => {
+			try {
+				listener({
+					object: query.objects[event.object],
+					objects: query.objects,
+					method: event.method,
+					args: event.args,
+					reply: event.reply,
+				});
+			} catch (e) {
+				event.reply(null, "internal error");
+				throw e;
+			}
+		});
 		
 		return query;
 	}
@@ -121,16 +144,25 @@ export class Connection extends EventEmitter {
 	emit(object, event, data) {
 		return this.request({ type: "emit", object, event, data });
 	}
+	
+	invoke(object, method, args) {
+		return this.request({ type: "invoke", object, method, args });
+	}
+	
+	invokeResult(invocationId, result) {
+		return this.request({ type: "invokeResult", invocationId, result });
+	}
 }
 
 class Query extends EventEmitter {
-	constructor(pattern, connection) {
+	constructor(pattern, options, connection) {
 		super();
 		this.state = STATE_CLOSED;
 		this.pattern = pattern;
 		this.connection = connection;
 		this.queryId = null;
 		this.objects = {};
+		this.options = options;
 		
 		this._onOpen = this._onOpen.bind(this);
 		this._onClose = this._onClose.bind(this);
@@ -138,6 +170,7 @@ class Query extends EventEmitter {
 		this._onChange = this._onChange.bind(this);
 		this._onRemove = this._onRemove.bind(this);
 		this._onEvent = this._onEvent.bind(this);
+		this._onInvocation = this._onInvocation.bind(this);
 		
 		this.connection.addEventListener("open", this._onOpen);
 		this.connection.addEventListener("close", this._onClose);
@@ -145,6 +178,7 @@ class Query extends EventEmitter {
 		this.connection.addEventListener("queryChange", this._onChange);
 		this.connection.addEventListener("queryRemove", this._onRemove);
 		this.connection.addEventListener("queryEvent", this._onEvent);
+		this.connection.addEventListener("queryInvocation", this._onInvocation);
 		
 		this.start();
 	}
@@ -159,6 +193,7 @@ class Query extends EventEmitter {
 			this.connection.request({
 				type: "query",
 				pattern: this.pattern,
+				provideRpc: this.options.provideRpc,
 			}).then(({ queryId, objects }) => {
 				if (this.state == STATE_CONNECTING) {
 					this.state = STATE_OPEN;
@@ -192,6 +227,7 @@ class Query extends EventEmitter {
 		this.connection.removeEventListener("queryChange", this._onChange);
 		this.connection.removeEventListener("queryRemove", this._onRemove);
 		this.connection.removeEventListener("queryEvent", this._onEvent);
+		this.connection.removeEventListener("queryInvocation", this._onInvocation);
 	}
 	
 	_onOpen() {
@@ -234,6 +270,17 @@ class Query extends EventEmitter {
 	_onEvent(data) {
 		if (data.queryId == this.queryId) {
 			this.dispatchEvent("event", data);
+		}
+	}
+	
+	_onInvocation(data) {
+		if (data.queryId == this.queryId) {
+			this.dispatchEvent("invocation", {
+				...data,
+				reply: (result) => {
+					return this.connection.invokeResult(data.invocationId, result);
+				},
+			});
 		}
 	}
 }

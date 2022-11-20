@@ -45,6 +45,7 @@ function renderLogMessage(elem, message, colorer) {
 		case "query":
 			elem.querySelector(".log-message-pattern").innerText = message.pattern;
 			elem.querySelector(".log-message-query").innerText = shortId(message.query);
+			elem.querySelector(".log-message-provide-rpc").innerText = "(provide rpc: "+!!message.provideRpc+")";
 			break;
 		case "unsubscribe":
 			elem.querySelector(".log-message-query").innerText = shortId(message.query);
@@ -65,6 +66,17 @@ function renderLogMessage(elem, message, colorer) {
 			elem.querySelector(".log-message-event").innerText = message.event;
 			elem.querySelector(".log-message-data").innerText = JSON.stringify(message.data);
 			break;
+		case "invoke":
+			elem.querySelector(".log-message-object").innerText = message.object;
+			elem.querySelector(".log-message-object").href = objectUrl(message.object);
+			elem.querySelector(".log-message-invocation").innerText = shortId(message.invocationId);
+			elem.querySelector(".log-message-method").innerText = message.method;
+			elem.querySelector(".log-message-args").innerText = JSON.stringify(message.args);
+			break;
+		case "invokeResult":
+			elem.querySelector(".log-message-invocation").innerText = shortId(message.invocationId);
+			elem.querySelector(".log-message-result").innerText = JSON.stringify(message.result);
+			break;
 	}
 }
 
@@ -81,6 +93,8 @@ export default class LogPage {
 			"patch": template("template-log-message-patch"),
 			"remove": template("template-log-message-remove"),
 			"emit": template("template-log-message-emit"),
+			"invoke": template("template-log-message-invoke"),
+			"invokeResult": template("template-log-message-invoke-result"),
 		}
 		this.elements = [];
 		this.waitingMessages = [];

@@ -57,6 +57,12 @@ struct EmitRequest {
 	data: Value,
 }
 
+#[derive(Deserialize)]
+struct InvokeRequest {
+	method: String,
+	args: Value,
+}
+
 async fn serve_websocket(websocket: HyperWebsocket, server: Server) -> Result<(), Box<dyn std::error::Error>> {
 	let mut websocket = websocket.await?;
 	
@@ -75,9 +81,10 @@ async fn serve_websocket(websocket: HyperWebsocket, server: Server) -> Result<()
 					
 					if let WebsocketMessage::Text(line) = message {
 						if let Ok(request) = serde_json::from_str::<RequestMessage>(&line) {
-							let response = handle_message(request, &client, server.clone());
-							let json_string = serde_json::to_string(&response).unwrap();
-							websocket.send(WebsocketMessage::text(json_string)).await?;
+							if let Some(response) = handle_message(request, &client, server.clone()) {
+								let json_string = serde_json::to_string(&response).unwrap();
+								websocket.send(WebsocketMessage::text(json_string)).await?;
+							}
 						}
 					}
 				},
@@ -114,6 +121,7 @@ impl RequestHandler {
 			(&Method::DELETE, "objects", Some(name)) => self.handle_remove(name),
 			
 			(&Method::POST, "events", Some(name)) => self.handle_emit(name, req).await,
+			(&Method::POST, "invoke", Some(name)) => self.handle_invoke(name, req).await,
 			
 			(&Method::GET, "query", None) if is_event_stream(req.headers()) => self.handle_query(req),
 			(&Method::GET, "query", None) => self.handle_get_all(req),
@@ -196,6 +204,28 @@ impl RequestHandler {
 		let success: Value = json!({ "success": true });
 		Ok(json_response(&success))
 	}
+	
+	async fn handle_invoke(&self, name: &str, req: Request<Body>) -> Result<Response<Body>, (StatusCode, String)> {
+		let mut client = self.server.client_connect();
+		
+		let bytes = hyper::body::to_bytes(req).await
+			.map_err(|_| (StatusCode::BAD_REQUEST, "invalid body".to_string()))?;
+		
+		let invoke_req = serde_json::from_slice::<InvokeRequest>(&bytes)
+			.map_err(|_| (StatusCode::BAD_REQUEST, "invalid json".to_string()))?;
+		
+		self.server.invoke(name.to_string(), invoke_req.method, invoke_req.args, Value::Null, &client)
+			.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+		
+		if let Some(Message::InvocationResult { result, request_id: _ }) = client.inbox_next().await {
+			match result {
+				Ok(result) => Ok(json_response(&result)),
+				Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+			}
+		} else {
+			unreachable!();
+		}
+	}
 
 	fn handle_remove(&self, name: &str) -> Result<Response<Body>, (StatusCode, String)> {
 		let client = self.server.client_connect();
@@ -218,7 +248,7 @@ impl RequestHandler {
 		let pattern = Pattern::compile(&pattern_str)
 			.map_err(|_| (StatusCode::BAD_REQUEST, "invalid pattern".to_string()))?;
 		
-		let (query_id, objects) = self.server.query(&pattern, &client)
+		let (query_id, objects) = self.server.query(&pattern, false, &client)
 			.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 		
 		let (mut sender, body) = Body::channel();
@@ -239,6 +269,8 @@ impl RequestHandler {
 						if query_id == msg_query_id { Some(event("remove", json!({ "object": object }))) } else { None },
 					Message::QueryEvent { query_id: msg_query_id, object, event: event_name, data } =>
 						if query_id == msg_query_id { Some(event("event", json!({ "object": object, "event": event_name, "data": data }))) } else { None },
+					Message::QueryInvocation { .. } => unreachable!(),
+					Message::InvocationResult { .. } => unreachable!(),
 				};
 				
 				if let Some(msg) = out {

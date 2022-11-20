@@ -21,8 +21,11 @@ pub enum Request {
 	Get {
 		pattern: String,
 	},
+	#[serde(rename_all = "camelCase")]
 	Query {
 		pattern: String,
+		#[serde(default = "bool::default")]
+		provide_rpc: bool,
 	},
 	#[serde(rename_all = "camelCase")]
 	Unsubscribe {
@@ -35,7 +38,18 @@ pub enum Request {
 		object: String,
 		event: String,
 		data: Value,
-	}
+	},
+	Invoke {
+		object: String,
+		method: String,
+		args: Value,
+	},
+	#[serde(rename = "invokeResult")]
+	#[serde(rename_all = "camelCase")]
+	InvokeResult {
+		invocation_id: Uuid,
+		result: Value,
+	},
 }
 
 #[derive(Serialize, Debug)]
@@ -100,4 +114,21 @@ pub enum EventMessage {
 		event: String,
 		data: Value,
 	},
+	#[serde(rename_all = "camelCase")]
+	QueryInvocation {
+		invocation_id: Uuid,
+		query_id: Uuid,
+		object: String,
+		method: String,
+		args: Value,
+	},
+	// TODO: not an event message?
+	#[serde(rename_all = "camelCase")]
+	InvocationResult {
+		request_id: Value,
+		#[serde(skip_serializing_if = "Option::is_none")]
+		result: Option<Value>,
+		#[serde(skip_serializing_if = "Option::is_none")]
+		error: Option<String>,
+	}
 }

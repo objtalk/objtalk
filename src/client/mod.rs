@@ -31,6 +31,12 @@ struct EmitRequest {
 	data: Value,
 }
 
+#[derive(Serialize)]
+struct InvokeRequest {
+	method: String,
+	args: Value,
+}
+
 pub struct HttpClient {
 	url: String,
 }
@@ -120,5 +126,26 @@ impl HttpClient {
 		status_ok(&res)?;
 		
 		Ok(())
+	}
+	
+	pub async fn invoke<S: Into<String>, S2: Into<String>>(&self, object: S, method: S2, args: Value) -> Result<Value, Error> {
+		let client = Client::new();
+		
+		let invoke_req = InvokeRequest { method: method.into(), args: args.into() };
+		let json = serde_json::to_string(&invoke_req)?;
+		
+		let req = Request::builder()
+			.method(Method::POST)
+			.uri(self.url.to_owned() + "/invoke/" + &object.into())
+			.body(Body::from(json)).unwrap();
+		
+		let res = client.request(req).await?;
+		status_ok(&res)?;
+		
+		let body = hyper::body::aggregate(res).await?;
+		
+		let result = serde_json::from_reader(body.reader())?;
+		
+		Ok(result)
 	}
 }
