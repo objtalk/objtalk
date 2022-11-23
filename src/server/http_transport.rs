@@ -80,10 +80,15 @@ async fn serve_websocket(websocket: HyperWebsocket, server: Server) -> Result<()
 					let message = message?;
 					
 					if let WebsocketMessage::Text(line) = message {
-						if let Ok(request) = serde_json::from_str::<RequestMessage>(&line) {
-							if let Some(response) = handle_message(request, &client, server.clone()) {
-								let json_string = serde_json::to_string(&response).unwrap();
-								websocket.send(WebsocketMessage::text(json_string)).await?;
+						match serde_json::from_str::<RequestMessage>(&line) {
+							Ok(request) => {
+								if let Some(response) = handle_message(request, &client, server.clone()) {
+									let json_string = serde_json::to_string(&response).unwrap();
+									websocket.send(WebsocketMessage::text(json_string)).await?;
+								}
+							},
+							Err(_) => {
+								websocket.send(WebsocketMessage::text("{\"type\":\"error\",\"error\":\"invalid message\"}")).await?;
 							}
 						}
 					}

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use tokio::net::{TcpStream, TcpListener};
 use tokio_util::codec::{Framed, LinesCodec};
 
-async fn handle_connection(stream: TcpStream, _addr: SocketAddr, server: Server) {
+async fn handle_connection(stream: TcpStream, _addr: SocketAddr, server: Server) -> Result<(), Box<dyn std::error::Error>> {
 	let mut client = server.client_connect();
 	
 	let mut lines = Framed::new(stream, LinesCodec::new());
@@ -16,15 +16,20 @@ async fn handle_connection(stream: TcpStream, _addr: SocketAddr, server: Server)
 			Some(msg) = client.inbox_next() => {
 				let response = handle_inbox_message(msg);
 				let json_string = serde_json::to_string(&response).unwrap();
-				lines.send(json_string).await.unwrap();
+				lines.send(json_string).await?;
 			},
 			result = lines.next() => match result {
 				Some(Ok(line)) => {
-					if let Ok(request) = serde_json::from_str::<RequestMessage>(&line) {
-						if let Some(response) = handle_message(request, &client, server.clone()) {
-							let json_string = serde_json::to_string(&response).unwrap();
-							lines.send(json_string).await.unwrap();
-						}
+					match serde_json::from_str::<RequestMessage>(&line) {
+						Ok(request) => {
+							if let Some(response) = handle_message(request, &client, server.clone()) {
+								let json_string = serde_json::to_string(&response).unwrap();
+								lines.send(json_string).await?;
+							}
+						},
+						Err(_) => {
+							lines.send("{\"type\":\"error\",\"error\":\"invalid message\"}").await?;
+						},
 					}
 				},
 				Some(Err(e)) => {
@@ -34,6 +39,8 @@ async fn handle_connection(stream: TcpStream, _addr: SocketAddr, server: Server)
 			}
 		}
 	}
+	
+	Ok(())
 }
 
 pub struct TcpTransport {
@@ -56,7 +63,9 @@ impl TcpTransport {
 			
 			let server = self.server.clone();
 			tokio::spawn(async move {
-				handle_connection(stream, addr, server).await;
+				if let Err(e) = handle_connection(stream, addr, server).await {
+					dbg!(e);
+				}
 			});
 		}
 	}

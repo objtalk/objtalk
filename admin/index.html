@@ -166,6 +166,7 @@
 			
 			conn.addEventListener("open", _ => document.body.classList.add("online"));
 			conn.addEventListener("close", _ => document.body.classList.remove("online"));
+			conn.addEventListener("error", e => console.error(e));
 			
 			let system = conn.query("$system");
 			
