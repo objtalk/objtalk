@@ -1,6 +1,6 @@
 [package]
 name = "objtalk"
-version = "0.2.1"
+version = "0.3.0"
 authors = ["hinzundcode <chris-git@appucino.de>"]
 license = "MIT"
 description = "a lightweight realtime database for IoT projects"
