@@ -86,7 +86,7 @@ The objtalk crate provides the `objtalk-server` and `objtalk-cli` binaries, but 
 using objtalk-cli:
 
 ```
-$ objtalk-cli set sensor '{"value":42}'
+$ objtalk-cli set sensor '{"temperature":20}'
 ```
 
 over http:
