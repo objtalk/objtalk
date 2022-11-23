@@ -38,17 +38,19 @@ fn handle_request(request: Request, request_id: Value, client: &Client, server: 
 			Ok(Some(Response::Success { success: true }))
 		},
 		Request::Remove { name } => {
-			let existed = server.remove(name, client);
+			let existed = server.remove(&name, client)
+				.map_err(|e| e.to_string())?;
+			
 			Ok(Some(Response::Remove { existed }))
 		},
 		Request::Emit { object, event, data } => {
-			server.emit(object, event, data, client)
+			server.emit(&object, &event, data, client)
 				.map_err(|e| e.to_string())?;
 			
 			Ok(Some(Response::Success { success: true }))
 		},
 		Request::Invoke { object, method, args } => {
-			server.invoke(object, method, args, request_id, client)
+			server.invoke(&object, &method, args, request_id, client)
 				.map_err(|e| e.to_string())?;
 			
 			Ok(None)

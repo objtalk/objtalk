@@ -156,14 +156,156 @@ struct State {
 }
 
 impl State {
-	fn emit(&mut self, object: String, event: String, data: Value) -> Result<(), Error> {
-		if self.objects.get(&object).is_none() {
+	fn set(&mut self, name: &str, value: Value, client_id: Uuid) -> Result<(), Error> {
+		let inserted: bool;
+		
+		validate_object_name(name)?;
+		
+		self.log(LogMessage::Set { object: name.to_string(), value: value.clone(), client: client_id });
+		
+		if let Some(object) = self.objects.get_mut(name) {
+			object.value = value;
+			object.last_modified = Utc::now();
+			inserted = false;
+		} else {
+			self.objects.insert(name.to_string(), Object {
+				name: name.to_string(),
+				value,
+				last_modified: Utc::now(),
+			});
+			inserted = true;
+		}
+		
+		let object = self.objects[name].clone();
+		
+		if let Some(storage) = &self.storage {
+			if inserted {
+				storage.add_object(object.clone());
+			} else {
+				storage.change_object(object.clone());
+			}
+		}
+		
+		for client in self.clients.values_mut() {
+			for query in &mut client.queries {
+				if query.pattern.matches_str(name) {
+					let msg = if query.objects.contains(name) {
+						Message::QueryChange {
+							query_id: query.id,
+							object: object.clone(),
+						}
+					} else {
+						query.objects.insert(name.to_string());
+						Message::QueryAdd {
+							query_id: query.id,
+							object: object.clone(),
+						}
+					};
+					
+					let _ = client.inbox_tx.unbounded_send(msg);
+				}
+			}
+		}
+		
+		Ok(())
+	}
+	
+	fn patch(&mut self, name: &str, value: Value, client_id: Uuid) -> Result<(), Error> {
+		let inserted: bool;
+		
+		validate_object_name(name)?;
+		
+		if !value.is_object() {
+			return Err(Error::CantMergeObjects);
+		}
+		
+		self.log(LogMessage::Patch { object: name.to_string(), value: value.clone(), client: client_id });
+		
+		if let Some(object) = self.objects.get_mut(name) {
+			merge_into_object(&mut object.value, &value)?;
+			object.last_modified = Utc::now();
+			inserted = false;
+		} else {
+			self.objects.insert(name.to_string(), Object {
+				name: name.to_string(),
+				value,
+				last_modified: Utc::now(),
+			});
+			inserted = true;
+		}
+		
+		let object = self.objects[name].clone();
+		
+		if let Some(storage) = &self.storage {
+			if inserted {
+				storage.add_object(object.clone());
+			} else {
+				storage.change_object(object.clone());
+			}
+		}
+		
+		for client in self.clients.values_mut() {
+			for query in &mut client.queries {
+				if query.pattern.matches_str(name) {
+					let msg = if query.objects.contains(name) {
+						Message::QueryChange {
+							query_id: query.id,
+							object: object.clone(),
+						}
+					} else {
+						query.objects.insert(name.to_string());
+						Message::QueryAdd {
+							query_id: query.id,
+							object: object.clone(),
+						}
+					};
+					
+					let _ = client.inbox_tx.unbounded_send(msg);
+				}
+			}
+		}
+		
+		Ok(())
+	}
+	
+	fn remove(&mut self, name: &str, client_id: Uuid) -> Result<bool, Error> {
+		validate_object_name(name)?;
+		
+		if let Some(object) = self.objects.remove(name) {
+			self.log(LogMessage::Remove { object: name.to_string(), client: client_id });
+			
+			if let Some(storage) = &self.storage {
+				storage.remove_object(object.clone());
+			}
+			
+			for client in self.clients.values_mut() {
+				for query in &mut client.queries {
+					if query.objects.contains(name) {
+						let msg = Message::QueryRemove {
+							query_id: query.id,
+							object: object.clone()
+						};
+						let _ = client.inbox_tx.unbounded_send(msg);
+						
+						query.objects.remove(name);
+					}
+				}
+			}
+			
+			Ok(true)
+		} else {
+			Ok(false)
+		}
+	}
+	
+	fn internal_emit(&mut self, object: &str, event: &str, data: Value) -> Result<(), Error> {
+		if self.objects.get(object).is_none() {
 			return Err(Error::ObjectNotFound)
 		}
 		
 		for client in self.clients.values_mut() {
 			for query in &mut client.queries {
-				if query.objects.contains(&object) {
+				if query.objects.contains(object) {
 					let msg = Message::QueryEvent {
 						query_id: query.id,
 						object: object.to_string(),
@@ -178,18 +320,31 @@ impl State {
 		Ok(())
 	}
 	
-	fn invoke(&mut self, object: String, method: String, args: Value, invocation_id: Uuid, request_id: Value, client: &Client) -> Result<(), Error> {
-		if self.objects.get(&object).is_none() {
+	fn emit(&mut self, object: &str, event: &str, data: Value, client_id: Uuid) -> Result<(), Error> {
+		validate_object_name(object)?;
+		
+		self.log(LogMessage::Emit { object: object.to_string(), event: event.to_string(), data: data.clone(), client: client_id });
+		self.internal_emit(object, event, data)
+	}
+	
+	fn invoke(&mut self, object: &str, method: &str, args: Value, request_id: Value, client_id: Uuid) -> Result<(), Error> {
+		validate_object_name(object)?;
+		
+		let invocation_id = Uuid::new_v4();
+		
+		self.log(LogMessage::Invoke { object: object.to_string(), method: method.to_string(), args: args.clone(), invocation_id: invocation_id.clone(), client: client_id });
+		
+		if self.objects.get(object).is_none() {
 			return Err(Error::ObjectNotFound)
 		}
 		
 		for responder in self.clients.values_mut() {
 			for query in &mut responder.queries {
 				if query.provide_rpc {
-					if query.objects.contains(&object) {
+					if query.objects.contains(object) {
 						responder.invocations.push(Invocation {
 							id: invocation_id,
-							client_id: client.id,
+							client_id,
 							request_id,
 							query_id: query.id,
 						});
@@ -215,7 +370,7 @@ impl State {
 	fn log(&mut self, message: LogMessage) {
 		self.logger.log(&message);
 		
-		self.emit("$system".to_string(), "log".to_string(), serde_json::to_value(message).unwrap()).unwrap()
+		self.internal_emit("$system", "log", serde_json::to_value(message).unwrap()).unwrap()
 	}
 }
 
@@ -271,8 +426,6 @@ impl Server {
 	fn client_disconnect(&self, client_id: Uuid) {
 		let mut state = self.shared.state.lock().unwrap();
 		
-		state.log(LogMessage::ClientDisconnect { client: client_id });
-		
 		let client = state.clients.remove(&client_id);
 		
 		if let Some(client) = client {
@@ -286,120 +439,18 @@ impl Server {
 				}
 			}
 		}
+		
+		state.log(LogMessage::ClientDisconnect { client: client_id });
 	}
 	
 	pub fn set(&self, name: &str, value: Value, client: &Client) -> Result<(), Error> {
 		let mut state = self.shared.state.lock().unwrap();
-		let inserted: bool;
-		
-		validate_object_name(name)?;
-		
-		state.log(LogMessage::Set { object: name.to_string(), value: value.clone(), client: client.id });
-		
-		if let Some(object) = state.objects.get_mut(name) {
-			object.value = value;
-			object.last_modified = Utc::now();
-			inserted = false;
-		} else {
-			state.objects.insert(name.to_string(), Object {
-				name: name.to_string(),
-				value,
-				last_modified: Utc::now(),
-			});
-			inserted = true;
-		}
-		
-		let object = state.objects[name].clone();
-		
-		if let Some(storage) = &state.storage {
-			if inserted {
-				storage.add_object(object.clone());
-			} else {
-				storage.change_object(object.clone());
-			}
-		}
-		
-		for client in state.clients.values_mut() {
-			for query in &mut client.queries {
-				if query.pattern.matches_str(name) {
-					let msg = if query.objects.contains(name) {
-						Message::QueryChange {
-							query_id: query.id,
-							object: object.clone(),
-						}
-					} else {
-						query.objects.insert(name.to_string());
-						Message::QueryAdd {
-							query_id: query.id,
-							object: object.clone(),
-						}
-					};
-					
-					let _ = client.inbox_tx.unbounded_send(msg);
-				}
-			}
-		}
-		
-		Ok(())
+		state.set(name, value, client.id)
 	}
 	
 	pub fn patch(&self, name: &str, value: Value, client: &Client) -> Result<(), Error> {
 		let mut state = self.shared.state.lock().unwrap();
-		let inserted: bool;
-		
-		validate_object_name(name)?;
-		
-		if !value.is_object() {
-			return Err(Error::CantMergeObjects);
-		}
-		
-		state.log(LogMessage::Patch { object: name.to_string(), value: value.clone(), client: client.id });
-		
-		if let Some(object) = state.objects.get_mut(name) {
-			merge_into_object(&mut object.value, &value)?;
-			object.last_modified = Utc::now();
-			inserted = false;
-		} else {
-			state.objects.insert(name.to_string(), Object {
-				name: name.to_string(),
-				value,
-				last_modified: Utc::now(),
-			});
-			inserted = true;
-		}
-		
-		let object = state.objects[name].clone();
-		
-		if let Some(storage) = &state.storage {
-			if inserted {
-				storage.add_object(object.clone());
-			} else {
-				storage.change_object(object.clone());
-			}
-		}
-		
-		for client in state.clients.values_mut() {
-			for query in &mut client.queries {
-				if query.pattern.matches_str(name) {
-					let msg = if query.objects.contains(name) {
-						Message::QueryChange {
-							query_id: query.id,
-							object: object.clone(),
-						}
-					} else {
-						query.objects.insert(name.to_string());
-						Message::QueryAdd {
-							query_id: query.id,
-							object: object.clone(),
-						}
-					};
-					
-					let _ = client.inbox_tx.unbounded_send(msg);
-				}
-			}
-		}
-		
-		Ok(())
+		state.patch(name, value, client.id)
 	}
 	
 	pub fn get(&self, pattern: &Pattern, client: &Client) -> Vec<Object> {
@@ -475,60 +526,19 @@ impl Server {
 		Ok(())
 	}
 	
-	pub fn remove(&self, name: String, client: &Client) -> bool {
+	pub fn remove(&self, name: &str, client: &Client) -> Result<bool, Error> {
 		let mut state = self.shared.state.lock().unwrap();
-		
-		if validate_object_name(&name).is_err() {
-			return false;
-		}
-		
-		if let Some(object) = state.objects.remove(&name) {
-			state.log(LogMessage::Remove { object: name.clone(), client: client.id });
-			
-			if let Some(storage) = &state.storage {
-				storage.remove_object(object.clone());
-			}
-			
-			for client in state.clients.values_mut() {
-				for query in &mut client.queries {
-					if query.objects.contains(&name) {
-						let msg = Message::QueryRemove {
-							query_id: query.id,
-							object: object.clone()
-						};
-						let _ = client.inbox_tx.unbounded_send(msg);
-						
-						query.objects.remove(&name);
-					}
-				}
-			}
-			
-			return true;
-		}
-		
-		return false;
+		state.remove(name, client.id)
 	}
 	
-	pub fn emit(&self, object: String, event: String, data: Value, client: &Client) -> Result<(), Error> {
+	pub fn emit(&self, object: &str, event: &str, data: Value, client: &Client) -> Result<(), Error> {
 		let mut state = self.shared.state.lock().unwrap();
-		
-		validate_object_name(&object)?;
-		
-		state.log(LogMessage::Emit { object: object.clone(), event: event.clone(), data: data.clone(), client: client.id });
-		
-		state.emit(object, event, data)
+		state.emit(object, event, data, client.id)
 	}
 	
-	pub fn invoke(&self, object: String, method: String, args: Value, request_id: Value, client: &Client) -> Result<(), Error> {
+	pub fn invoke(&self, object: &str, method: &str, args: Value, request_id: Value, client: &Client) -> Result<(), Error> {
 		let mut state = self.shared.state.lock().unwrap();
-		
-		validate_object_name(&object)?;
-		
-		let invocation_id = Uuid::new_v4();
-		
-		state.log(LogMessage::Invoke { object: object.clone(), method: method.clone(), args: args.clone(), invocation_id: invocation_id.clone(), client: client.id });
-		
-		state.invoke(object, method, args, invocation_id, request_id, client)
+		state.invoke(object, method, args, request_id, client.id)
 	}
 	
 	pub fn invoke_result(&self, invocation_id: Uuid, result: Value, client: &Client) -> Result<(), Error> {
@@ -813,7 +823,7 @@ mod tests {
 		let server = create_server();
 		let client = server.client_connect();
 		
-		let existed = server.remove("foo".to_string(), &client);
+		let existed = server.remove("foo", &client).unwrap();
 		assert!(!existed);
 	}
 	
@@ -824,7 +834,7 @@ mod tests {
 		
 		server.set("foo", json!({ "bar": 1 }), &client).unwrap();
 		
-		let existed = server.remove("foo".to_string(), &client);
+		let existed = server.remove("foo", &client).unwrap();
 		assert!(existed);
 	}
 	
@@ -839,7 +849,7 @@ mod tests {
 		
 		let (query_id, _) = server.query(&Pattern::compile("*").unwrap(), false, &client).unwrap();
 		
-		server.remove("foo".to_string(), &client);
+		server.remove("foo", &client).unwrap();
 		
 		let msg = client.inbox_try_next().unwrap().unwrap();
 		
@@ -877,7 +887,7 @@ mod tests {
 		
 		let (query_id, _) = server.query(&Pattern::compile("*").unwrap(), false, &client).unwrap();
 		
-		server.emit("gamepad".to_string(), "buttonpress".to_string(), json!({ "button": "a" }), &client).unwrap();
+		server.emit("gamepad", "buttonpress", json!({ "button": "a" }), &client).unwrap();
 		
 		let msg = client.inbox_try_next().unwrap().unwrap();
 		
@@ -898,7 +908,7 @@ mod tests {
 		let server = create_server();
 		let client = server.client_connect();
 		
-		let result = server.emit("gamepad".to_string(), "buttonpress".to_string(), json!({ "button": "a" }), &client);
+		let result = server.emit("gamepad", "buttonpress", json!({ "button": "a" }), &client);
 		
 		assert_eq!(result, Err(Error::ObjectNotFound));
 	}
@@ -908,7 +918,7 @@ mod tests {
 		let server = create_server();
 		let client = server.client_connect();
 		
-		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &client);
+		let result = server.invoke("lamp", "setState", json!({ "on": true }), json!(1), &client);
 		
 		assert_eq!(result, Err(Error::ObjectNotFound));
 	}
@@ -920,7 +930,7 @@ mod tests {
 		
 		server.set("lamp", json!({ "on": false }), &client).unwrap();
 		
-		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &client);
+		let result = server.invoke("lamp", "setState", json!({ "on": true }), json!(1), &client);
 		
 		assert_eq!(result, Err(Error::ObjectNotInvocable));
 	}
@@ -934,7 +944,7 @@ mod tests {
 		server.set("lamp", json!({ "on": false }), &provider).unwrap();
 		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &provider).unwrap();
 		
-		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &consumer);
+		let result = server.invoke("lamp", "setState", json!({ "on": true }), json!(1), &consumer);
 		assert_eq!(result, Ok(()));
 		
 		let msg = provider.inbox_try_next().unwrap().unwrap();
@@ -973,7 +983,7 @@ mod tests {
 		server.set("lamp", json!({ "on": false }), &provider).unwrap();
 		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &provider).unwrap();
 		
-		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &consumer);
+		let result = server.invoke("lamp", "setState", json!({ "on": true }), json!(1), &consumer);
 		assert_eq!(result, Ok(()));
 		
 		let msg = provider.inbox_try_next().unwrap().unwrap();
@@ -1010,7 +1020,7 @@ mod tests {
 		server.set("lamp", json!({ "on": false }), &provider).unwrap();
 		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &provider).unwrap();
 		
-		let result = server.invoke("lamp".to_string(), "setState".to_string(), json!({ "on": true }), json!(1), &consumer);
+		let result = server.invoke("lamp", "setState", json!({ "on": true }), json!(1), &consumer);
 		assert_eq!(result, Ok(()));
 		
 		let msg = provider.inbox_try_next().unwrap().unwrap();

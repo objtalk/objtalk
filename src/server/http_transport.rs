@@ -203,7 +203,7 @@ impl RequestHandler {
 		let emit_req = serde_json::from_slice::<EmitRequest>(&bytes)
 			.map_err(|_| (StatusCode::BAD_REQUEST, "invalid json".to_string()))?;
 		
-		self.server.emit(name.to_string(), emit_req.event, emit_req.data, &client)
+		self.server.emit(name, &emit_req.event, emit_req.data, &client)
 			.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 		
 		let success: Value = json!({ "success": true });
@@ -219,7 +219,7 @@ impl RequestHandler {
 		let invoke_req = serde_json::from_slice::<InvokeRequest>(&bytes)
 			.map_err(|_| (StatusCode::BAD_REQUEST, "invalid json".to_string()))?;
 		
-		self.server.invoke(name.to_string(), invoke_req.method, invoke_req.args, Value::Null, &client)
+		self.server.invoke(name, &invoke_req.method, invoke_req.args, Value::Null, &client)
 			.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 		
 		if let Some(Message::InvocationResult { result, request_id: _ }) = client.inbox_next().await {
@@ -235,7 +235,8 @@ impl RequestHandler {
 	fn handle_remove(&self, name: &str) -> Result<Response<Body>, (StatusCode, String)> {
 		let client = self.server.client_connect();
 		
-		let existed = self.server.remove(name.to_string(), &client);
+		let existed = self.server.remove(name, &client)
+			.map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 		
 		if existed {
 			let success: Value = json!({ "success": true });
