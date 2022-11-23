@@ -61,6 +61,12 @@ fn handle_request(request: Request, request_id: Value, client: &Client, server: 
 			
 			Ok(Some(Response::Success { success: true }))
 		},
+		Request::SetDisconnectCommands { commands } => {
+			server.set_disconnect_commands(commands, client)
+				.map_err(|e| e.to_string())?;
+			
+			Ok(Some(Response::Success { success: true }))
+		},
 	}
 }
 

@@ -1,5 +1,5 @@
 use chrono::prelude::*;
-use crate::{Object, VERSION_STRING};
+use crate::{Object, Command, VERSION_STRING};
 use crate::patterns::Pattern;
 use crate::server::logger::{Logger, LogMessage};
 use crate::server::storage::Storage;
@@ -115,6 +115,7 @@ pub struct ClientState {
 	queries: Vec<Query>,
 	invocations: Vec<Invocation>,
 	inbox_tx: UnboundedSender<Message>,
+	disconnect_commands: Vec<Command>,
 }
 
 pub struct Client {
@@ -414,6 +415,7 @@ impl Server {
 			queries: vec![],
 			invocations: vec![],
 			inbox_tx: tx,
+			disconnect_commands: vec![],
 		};
 		
 		state.log(LogMessage::ClientConnect { client: id });
@@ -438,9 +440,37 @@ impl Server {
 					let _ = client.inbox_tx.unbounded_send(msg);
 				}
 			}
+			
+			for command in client.disconnect_commands {
+				match command {
+					Command::Set { name, value } => {
+						let _ = state.set(&name, value, client.id);
+					},
+					Command::Patch { name, value } => {
+						let _ = state.patch(&name, value, client.id);
+					},
+					Command::Remove { name } => {
+						let _ = state.remove(&name, client.id);
+					},
+					Command::Emit { object, event, data } => {
+						let _ = state.emit(&object, &event, data, client.id);
+					},
+				}
+			}
 		}
 		
 		state.log(LogMessage::ClientDisconnect { client: client_id });
+	}
+	
+	pub fn set_disconnect_commands(&self, commands: Vec<Command>, client: &Client) -> Result<(), Error> {
+		let mut state = self.shared.state.lock().unwrap();
+		
+		if let Some(client) = state.clients.get_mut(&client.id) {
+			client.disconnect_commands = commands;
+			Ok(())
+		} else {
+			Err(Error::ClientNotFound)
+		}
 	}
 	
 	pub fn set(&self, name: &str, value: Value, client: &Client) -> Result<(), Error> {
@@ -1046,5 +1076,129 @@ mod tests {
 		} else {
 			assert!(false);
 		}
+	}
+	
+	#[test]
+	fn test_disconnect_command_set() {
+		let server = create_server();
+		let mut observer = server.client_connect();
+		let device = server.client_connect();
+		
+		server.set("lamp", json!({ "online": true }), &device).unwrap();
+		server.set_disconnect_commands(vec![
+			Command::Set {
+				name: "lamp".to_string(),
+				value: json!({ "online": false }),
+			}
+		], &device).unwrap();
+		
+		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &observer).unwrap();
+		
+		drop(device);
+		
+		let msg = observer.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::QueryChange { query_id: msg_query_id, object } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object.name, "lamp");
+			assert_eq!(object.value, json!({ "online": false }));
+		} else {
+			assert!(false);
+		}
+		
+		assert!(observer.inbox_try_next().is_err());
+	}
+	
+	#[test]
+	fn test_disconnect_command_patch() {
+		let server = create_server();
+		let mut observer = server.client_connect();
+		let device = server.client_connect();
+		
+		server.patch("lamp", json!({ "online": true }), &device).unwrap();
+		server.set_disconnect_commands(vec![
+			Command::Patch {
+				name: "lamp".to_string(),
+				value: json!({ "online": false }),
+			}
+		], &device).unwrap();
+		
+		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &observer).unwrap();
+		
+		drop(device);
+		
+		let msg = observer.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::QueryChange { query_id: msg_query_id, object } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object.name, "lamp");
+			assert_eq!(object.value, json!({ "online": false }));
+		} else {
+			assert!(false);
+		}
+		
+		assert!(observer.inbox_try_next().is_err());
+	}
+	
+	#[test]
+	fn test_disconnect_command_remove() {
+		let server = create_server();
+		let mut observer = server.client_connect();
+		let device = server.client_connect();
+		
+		server.patch("client", json!({ "online": true }), &device).unwrap();
+		server.set_disconnect_commands(vec![
+			Command::Remove {
+				name: "client".to_string(),
+			}
+		], &device).unwrap();
+		
+		let (query_id, _) = server.query(&Pattern::compile("client").unwrap(), true, &observer).unwrap();
+		
+		drop(device);
+		
+		let msg = observer.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::QueryRemove { query_id: msg_query_id, object } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object.name, "client");
+		} else {
+			assert!(false);
+		}
+		
+		assert!(observer.inbox_try_next().is_err());
+	}
+	
+	#[test]
+	fn test_disconnect_command_emit() {
+		let server = create_server();
+		let mut observer = server.client_connect();
+		let device = server.client_connect();
+		
+		server.set("lamp", json!({ "on": false }), &device).unwrap();
+		server.set_disconnect_commands(vec![
+			Command::Emit {
+				object: "lamp".to_string(),
+				event: "offline".to_string(),
+				data: json!({}),
+			}
+		], &device).unwrap();
+		
+		let (query_id, _) = server.query(&Pattern::compile("lamp").unwrap(), true, &observer).unwrap();
+		
+		drop(device);
+		
+		let msg = observer.inbox_try_next().unwrap().unwrap();
+		
+		if let Message::QueryEvent { query_id: msg_query_id, object, event, data } = msg {
+			assert_eq!(msg_query_id, query_id);
+			assert_eq!(object, "lamp");
+			assert_eq!(event, "offline");
+			assert_eq!(data, json!({}));
+		} else {
+			assert!(false);
+		}
+		
+		assert!(observer.inbox_try_next().is_err());
 	}
 }

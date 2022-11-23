@@ -1,4 +1,4 @@
-use crate::Object;
+use crate::{Object, Command};
 use serde::{Serialize,Deserialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -49,6 +49,10 @@ pub enum Request {
 	InvokeResult {
 		invocation_id: Uuid,
 		result: Value,
+	},
+	#[serde(rename = "setDisconnectCommands")]
+	SetDisconnectCommands {
+		commands: Vec<Command>,
 	},
 }
 

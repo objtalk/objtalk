@@ -19,3 +19,25 @@ pub struct Object {
 	pub value: Value,
 	pub last_modified: DateTime<Utc>,
 }
+
+#[derive(Deserialize, Debug)]
+#[serde(tag = "type")]
+#[serde(rename_all = "lowercase")]
+pub enum Command {
+	Set {
+		name: String,
+		value: Value,
+	},
+	Patch {
+		name: String,
+		value: Value,
+	},
+	Remove {
+		name: String,
+	},
+	Emit {
+		object: String,
+		event: String,
+		data: Value,
+	},
+}

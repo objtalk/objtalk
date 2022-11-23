@@ -471,3 +471,53 @@ The whole flow looks like this:
     }
 }
 ```
+
+### Disconnect commands
+
+A client can register a list of commands that are executed once the client disconnects. This can be used, for example, to indicate that a device went offline by changing the value of an object. The supported commands are `set`, `patch`, `remove` and `emit`.
+
+#### setDisconnectCommands `commands`
+
+`setDisconnectCommands` sets the list of commands to execute when the client disconnects.
+
+using objtalk-cli: unsupported
+
+over http: unsupported
+
+over tcp or websocket:
+
+```json
+{
+    "id": 1,
+    "type": "setDisconnectCommands",
+    "commands": [
+        {
+            "type": "set",
+            "name": "device/foo",
+            "value": { "offline": true },
+        },
+        {
+            "type": "patch",
+            "name": "device/foo",
+            "value": { "offline": true },
+        },
+        {
+            "type": "remove",
+            "name": "client",
+        },
+        {
+            "type": "emit",
+            "name": "device/foo",
+            "event": "offline",
+            "data": {},
+        }
+    ]
+}
+
+{
+    "requestId": 1,
+    "result": {
+        "success": true
+    }
+}
+```
