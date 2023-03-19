@@ -524,7 +524,13 @@ over tcp or websocket:
 
 ### Streams
 
+Streams are bidirectional binary communication channels between two clients. They can for example be used to pass binary data like files or a video stream, or to give a client exclusive access to a resource, e.g. to read input from a keyboard or to animate the color of a lamp.
 
+To create and open a stream, clients can use the `createStream` command, which returns a numeric index for selecting the stream, as well as a token that another client can use to join the stream. The stream starts in half-open state and another client can join the stream using the `openStream` command with the provided token. When another client joins the stream, the stream switches to the open state and a `streamOpen` event is sent to the other client.
+
+Once the stream is open data can be exchanged over binary websocket messages. Messages are prefixed with the channel index as an unsigned 32bit integer.
+
+To close the stream the `closeStream` command can be used. A `streamClosed` event is sent to the other client if a stream is closed. Streams are also closed automatically if one of the clients disconnects.
 
 #### createStream
 
