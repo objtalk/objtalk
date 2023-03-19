@@ -153,7 +153,7 @@ over tcp or websocket:
 
 `get` returns all objects where the name matches `pattern`.
 
-Object names look like a file path and consist of multiple parts seperated by forward slashes. Each part can be either a string, a `+` or `*`. `+` matches anything until the next slash, `*` matches anything until the end of the string. Multiple sub-patterns can be combined using a comma and are logically OR-ed togeter.
+Object names look like a file path and consist of multiple parts seperated by forward slashes. Each part of the pattern can be either a string, a `+` or `*`. `+` matches anything until the next slash, `*` matches anything until the end of the string. Multiple sub-patterns can be combined using a comma and are logically OR-ed togeter.
 
 Some examples:
 - `*` matches all objects
@@ -519,5 +519,94 @@ over tcp or websocket:
     "result": {
         "success": true
     }
+}
+```
+
+### Streams
+
+
+
+#### createStream
+
+`createStream` creates a stream.
+
+using objtalk-cli: unsupported
+
+over http: unsupported
+
+over tcp or websocket:
+
+```json
+{
+    "id": 1,
+    "type": "createStream"
+}
+
+{
+    "requestId": 1,
+    "result": {
+        "index": 1,
+        "token": "01234567-89ab-cdef-0123-456789abcdef"
+    }
+}
+```
+
+#### openStream `token`
+
+`openStream` opens a stream.
+
+using objtalk-cli: unsupported
+
+over http: unsupported
+
+over tcp or websocket:
+
+```json
+{
+    "id": 1,
+    "type": "openStream",
+    "token": "01234567-89ab-cdef-0123-456789abcdef"
+}
+
+{
+    "requestId": 1,
+    "result": {
+        "index": 1
+    }
+}
+
+{
+    "type": "streamOpen",
+    "index": 1
+}
+```
+
+#### closeStream `index`
+
+`closeStream` closes a stream.
+
+using objtalk-cli: unsupported
+
+over http: unsupported
+
+over tcp or websocket:
+
+```json
+{
+    "id": 1,
+    "type": "closeStream",
+    "index": 1,
+}
+
+{
+    "requestId": 1,
+    "result": {
+        "success": true
+    }
+}
+
+{
+    "type": "streamClosed",
+    "index": 1
 }
 ```

@@ -1,5 +1,5 @@
 use chrono::prelude::*;
-use crate::{Object, Command, VERSION_STRING};
+use crate::{Object, Command, StreamId, ClientStreamIndex, VERSION_STRING};
 use crate::patterns::Pattern;
 use crate::server::logger::{Logger, LogMessage};
 use crate::server::storage::Storage;
@@ -36,6 +36,12 @@ pub enum Error {
 	ObjectNotInvocable,
 	#[error("invocation not found")]
 	InvocationNotFound,
+	#[error("stream not found")]
+	StreamNotFound,
+	#[error("stream already open")]
+	StreamAlreadyOpen,
+	#[error("stream not open")]
+	StreamNotOpen,
 }
 
 fn validate_object_name(name: &str) -> Result<(), Error> {
@@ -90,6 +96,16 @@ pub enum Message {
 		request_id: Value,
 		result: Result<Value, Error>,
 	},
+	StreamOpen {
+		index: ClientStreamIndex,
+	},
+	StreamClosed {
+		index: ClientStreamIndex,
+	},
+	StreamData {
+		index: ClientStreamIndex,
+		data: Vec<u8>,
+	},
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +132,38 @@ pub struct ClientState {
 	invocations: Vec<Invocation>,
 	inbox_tx: UnboundedSender<Message>,
 	disconnect_commands: Vec<Command>,
+	next_stream_index: u32,
+	streams: HashMap<ClientStreamIndex, StreamId>,
+}
+
+#[derive(Debug)]
+pub struct StreamClient {
+	client_id: Uuid,
+	stream_index: ClientStreamIndex,
+}
+
+#[derive(Debug)]
+pub struct StreamState {
+	#[allow(dead_code)]
+	id: StreamId,
+	client_a: StreamClient,
+	client_b: Option<StreamClient>,
+}
+
+impl StreamState {
+	pub fn get_other(&self, client_id: &Uuid, stream_index: &ClientStreamIndex) -> Option<&StreamClient> {
+		if &self.client_a.client_id == client_id && &self.client_a.stream_index == stream_index {
+			return self.client_b.as_ref();
+		}
+		
+		if let Some(client_b) = &self.client_b {
+			if &client_b.client_id == client_id && &client_b.stream_index == stream_index {
+				return Some(&self.client_a);
+			}
+		}
+		
+		None
+	}
 }
 
 pub struct Client {
@@ -154,6 +202,7 @@ struct State {
 	clients: HashMap<Uuid,ClientState>,
 	storage: Option<Box<dyn Storage + Send>>,
 	logger: Box<dyn Logger + Send>,
+	streams: HashMap<StreamId,StreamState>,
 }
 
 impl State {
@@ -368,6 +417,108 @@ impl State {
 		Err(Error::ObjectNotInvocable)
 	}
 	
+	fn create_stream(&mut self, client_id: Uuid) -> Result<(StreamId, ClientStreamIndex), Error> {
+		let client = self.clients.get_mut(&client_id).ok_or(Error::ClientNotFound)?;
+		
+		let stream_id = StreamId::new();
+		let stream_index = ClientStreamIndex(client.next_stream_index);
+		client.next_stream_index += 1;
+		
+		self.streams.insert(stream_id, StreamState {
+			id: stream_id,
+			client_a: StreamClient { client_id, stream_index },
+			client_b: None,
+		});
+		
+		client.streams.insert(stream_index, stream_id);
+		
+		self.log(LogMessage::StreamCreate { id: stream_id, index: stream_index, client: client_id });
+		
+		Ok((stream_id, stream_index))
+	}
+	
+	fn open_stream(&mut self, id: StreamId, client_id: Uuid) -> Result<ClientStreamIndex, Error> {
+		let client = self.clients.get_mut(&client_id).ok_or(Error::ClientNotFound)?;
+		let stream = self.streams.get_mut(&id).ok_or(Error::StreamNotFound)?;
+		
+		if stream.client_b.is_some() {
+			return Err(Error::StreamAlreadyOpen);
+		}
+		
+		let stream_index = ClientStreamIndex(client.next_stream_index);
+		client.next_stream_index += 1;
+		
+		stream.client_b = Some(StreamClient { client_id, stream_index });
+		
+		client.streams.insert(stream_index, id);
+		
+		if let Some(client_a) = self.clients.get_mut(&stream.client_a.client_id) {
+			let msg = Message::StreamOpen {
+				index: stream.client_a.stream_index,
+			};
+			let _ = client_a.inbox_tx.unbounded_send(msg);
+		}
+		
+		self.log(LogMessage::StreamOpen { id, index: stream_index, client: client_id });
+		
+		Ok(stream_index)
+	}
+	
+	fn stream_send(&mut self, index: ClientStreamIndex, data: &[u8], client_id: Uuid) -> Result<(), Error> {
+		let client = self.clients.get_mut(&client_id).ok_or(Error::ClientNotFound)?;
+		let stream_id = client.streams.get(&index).ok_or(Error::StreamNotFound)?;
+		let stream = self.streams.get(&stream_id).ok_or(Error::StreamNotFound)?;
+		let recipient = stream.get_other(&client_id, &index).ok_or(Error::StreamNotOpen)?;
+		let recipient_client = self.clients.get_mut(&recipient.client_id).ok_or(Error::StreamNotOpen)?;
+		
+		let stream_index_bytes = recipient.stream_index.0.to_le_bytes();
+		let payload = [&stream_index_bytes, data].concat();
+		
+		let msg = Message::StreamData {
+			index: recipient.stream_index,
+			data: payload,
+		};
+		let _ = recipient_client.inbox_tx.unbounded_send(msg);
+		
+		Ok(())
+	}
+	
+	fn close_stream(&mut self, index: ClientStreamIndex, client_id: Uuid) -> Result<(), Error> {
+		let client = self.clients.get_mut(&client_id).ok_or(Error::ClientNotFound)?;
+		let stream_id = client.streams.get(&index).ok_or(Error::StreamNotFound)?;
+		
+		let stream_id2 = stream_id.clone();
+		self.close_stream_by_id(stream_id2)
+	}
+	
+	fn close_stream_by_id(&mut self, id: StreamId) -> Result<(), Error> {
+		let stream = self.streams.remove(&id).ok_or(Error::StreamNotFound)?;
+		
+		self.log(LogMessage::StreamClose { id, index: stream.client_a.stream_index, client: stream.client_a.client_id });
+		if let Some(client_a) = self.clients.get_mut(&stream.client_a.client_id) {
+			client_a.streams.remove(&stream.client_a.stream_index);
+			
+			let msg = Message::StreamClosed {
+				index: stream.client_a.stream_index,
+			};
+			let _ = client_a.inbox_tx.unbounded_send(msg);
+		}
+		
+		if let Some(stream_client_b) = stream.client_b {
+			self.log(LogMessage::StreamClose { id, index: stream_client_b.stream_index, client: stream_client_b.client_id });
+			if let Some(client_b) = self.clients.get_mut(&stream_client_b.client_id) {
+				client_b.streams.remove(&stream_client_b.stream_index);
+				
+				let msg = Message::StreamClosed {
+					index: stream_client_b.stream_index,
+				};
+				let _ = client_b.inbox_tx.unbounded_send(msg);
+			}
+		}
+		
+		Ok(())
+	}
+	
 	fn log(&mut self, message: LogMessage) {
 		self.logger.log(&message);
 		
@@ -397,6 +548,7 @@ impl Server {
 				clients: HashMap::new(),
 				storage,
 				logger,
+				streams: HashMap::new(),
 			})
 		});
 		
@@ -416,6 +568,8 @@ impl Server {
 			invocations: vec![],
 			inbox_tx: tx,
 			disconnect_commands: vec![],
+			next_stream_index: 1,
+			streams: HashMap::new(),
 		};
 		
 		state.log(LogMessage::ClientConnect { client: id });
@@ -439,6 +593,10 @@ impl Server {
 					};
 					let _ = client.inbox_tx.unbounded_send(msg);
 				}
+			}
+			
+			for (_, stream_id) in client.streams {
+				let _ = state.close_stream_by_id(stream_id);
 			}
 			
 			for command in client.disconnect_commands {
@@ -602,6 +760,26 @@ impl Server {
 		} else {
 			Err(Error::InvocationNotFound)
 		}
+	}
+	
+	pub fn create_stream(&self, client: &Client) -> Result<(StreamId, ClientStreamIndex), Error> {
+		let mut state = self.shared.state.lock().unwrap();
+		state.create_stream(client.id)
+	}
+	
+	pub fn open_stream(&self, id: StreamId, client: &Client) -> Result<ClientStreamIndex, Error> {
+		let mut state = self.shared.state.lock().unwrap();
+		state.open_stream(id, client.id)
+	}
+	
+	pub fn close_stream(&self, index: ClientStreamIndex, client: &Client) -> Result<(), Error> {
+		let mut state = self.shared.state.lock().unwrap();
+		state.close_stream(index, client.id)
+	}
+	
+	pub fn stream_send(&self, index: ClientStreamIndex, data: &[u8], client: &Client) -> Result<(), Error> {
+		let mut state = self.shared.state.lock().unwrap();
+		state.stream_send(index, data, client.id)
 	}
 }
 
@@ -1200,5 +1378,364 @@ mod tests {
 		}
 		
 		assert!(observer.inbox_try_next().is_err());
+	}
+	
+	#[test]
+	fn test_create_stream() {
+		let server = create_server();
+		let client = server.client_connect();
+		
+		let (stream1_id, stream1_index) = server.create_stream(&client).unwrap();
+		let (stream2_id, stream2_index) = server.create_stream(&client).unwrap();
+		assert_eq!(stream1_index.0, 1);
+		assert_eq!(stream2_index.0, 2);
+		assert!(stream1_id != stream2_id);
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client_state = state.clients.get(&client.id).unwrap();
+			assert_eq!(client_state.next_stream_index, 3);
+			assert_eq!(client_state.streams.get(&stream1_index).unwrap(), &stream1_id);
+			assert_eq!(client_state.streams.get(&stream2_index).unwrap(), &stream2_id);
+			
+			let stream1 = state.streams.get(&stream1_id).unwrap();
+			assert_eq!(stream1.id, stream1_id);
+			assert_eq!(stream1.client_a.client_id, client.id);
+			assert_eq!(stream1.client_a.stream_index, stream1_index);
+			assert!(stream1.client_b.is_none());
+			
+			let stream2 = state.streams.get(&stream2_id).unwrap();
+			assert_eq!(stream2.id, stream2_id);
+			assert_eq!(stream2.client_a.client_id, client.id);
+			assert_eq!(stream2.client_a.stream_index, stream2_index);
+			assert!(stream2.client_b.is_none());
+		}
+	}
+	
+	#[test]
+	fn test_open_stream() {
+		let server = create_server();
+		let mut client1 = server.client_connect();
+		let client2 = server.client_connect();
+		
+		let (stream_id, client1_stream_index) = server.create_stream(&client1).unwrap();
+		let client2_stream_index = server.open_stream(stream_id, &client2).unwrap();
+		
+		assert_eq!(client1_stream_index.0, 1);
+		assert_eq!(client2_stream_index.0, 1);
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamOpen { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client1_state = state.clients.get(&client1.id).unwrap();
+			assert_eq!(client1_state.next_stream_index, 2);
+			assert_eq!(client1_state.streams.get(&client1_stream_index).unwrap(), &stream_id);
+			
+			let client2_state = state.clients.get(&client2.id).unwrap();
+			assert_eq!(client2_state.next_stream_index, 2);
+			assert_eq!(client2_state.streams.get(&client2_stream_index).unwrap(), &stream_id);
+			
+			let stream = state.streams.get(&stream_id).unwrap();
+			assert_eq!(stream.id, stream_id);
+			assert_eq!(stream.client_a.client_id, client1.id);
+			assert_eq!(stream.client_a.stream_index, client1_stream_index);
+			assert_eq!(stream.client_b.as_ref().unwrap().client_id, client2.id);
+			assert_eq!(stream.client_b.as_ref().unwrap().stream_index, client2_stream_index);
+		}
+	}
+	
+	#[test]
+	fn test_open_stream_self() {
+		let server = create_server();
+		let mut client = server.client_connect();
+		
+		let (stream_id, client1_stream_index) = server.create_stream(&client).unwrap();
+		let client2_stream_index = server.open_stream(stream_id, &client).unwrap();
+		
+		assert_eq!(client1_stream_index.0, 1);
+		assert_eq!(client2_stream_index.0, 2);
+		
+		let msg = client.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamOpen { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client_state = state.clients.get(&client.id).unwrap();
+			assert_eq!(client_state.next_stream_index, 3);
+			assert_eq!(client_state.streams.get(&client1_stream_index).unwrap(), &stream_id);
+			assert_eq!(client_state.streams.get(&client2_stream_index).unwrap(), &stream_id);
+			
+			let stream = state.streams.get(&stream_id).unwrap();
+			assert_eq!(stream.id, stream_id);
+			assert_eq!(stream.client_a.client_id, client.id);
+			assert_eq!(stream.client_a.stream_index, client1_stream_index);
+			assert_eq!(stream.client_b.as_ref().unwrap().client_id, client.id);
+			assert_eq!(stream.client_b.as_ref().unwrap().stream_index, client2_stream_index);
+		}
+	}
+	
+	#[test]
+	fn test_stream_send_by_client1() {
+		let server = create_server();
+		let client1 = server.client_connect();
+		let mut client2 = server.client_connect();
+		
+		let (stream_id, client1_stream_index) = server.create_stream(&client1).unwrap();
+		let client2_stream_index = server.open_stream(stream_id, &client2).unwrap();
+		
+		server.stream_send(client1_stream_index, &[1, 2, 3, 4, 5, 6], &client1).unwrap();
+		
+		let msg = client2.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamData { index, data } = msg {
+			assert_eq!(index.0, 1);
+			assert_eq!(data, &[1, 0, 0, 0, 1, 2, 3, 4, 5, 6]);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client1_state = state.clients.get(&client1.id).unwrap();
+			assert_eq!(client1_state.next_stream_index, 2);
+			assert_eq!(client1_state.streams.get(&client1_stream_index).unwrap(), &stream_id);
+			
+			let client2_state = state.clients.get(&client2.id).unwrap();
+			assert_eq!(client2_state.next_stream_index, 2);
+			assert_eq!(client2_state.streams.get(&client2_stream_index).unwrap(), &stream_id);
+			
+			let stream = state.streams.get(&stream_id).unwrap();
+			assert_eq!(stream.id, stream_id);
+			assert_eq!(stream.client_a.client_id, client1.id);
+			assert_eq!(stream.client_a.stream_index, client1_stream_index);
+			assert_eq!(stream.client_b.as_ref().unwrap().client_id, client2.id);
+			assert_eq!(stream.client_b.as_ref().unwrap().stream_index, client2_stream_index);
+		}
+	}
+	
+	#[test]
+	fn test_stream_send_by_client2() {
+		let server = create_server();
+		let mut client1 = server.client_connect();
+		let client2 = server.client_connect();
+		
+		let (stream_id, client1_stream_index) = server.create_stream(&client1).unwrap();
+		let client2_stream_index = server.open_stream(stream_id, &client2).unwrap();
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamOpen { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		server.stream_send(client2_stream_index, &[1, 2, 3, 4, 5, 6], &client2).unwrap();
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamData { index, data } = msg {
+			assert_eq!(index.0, 1);
+			assert_eq!(data, &[1, 0, 0, 0, 1, 2, 3, 4, 5, 6]);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client1_state = state.clients.get(&client1.id).unwrap();
+			assert_eq!(client1_state.next_stream_index, 2);
+			assert_eq!(client1_state.streams.get(&client1_stream_index).unwrap(), &stream_id);
+			
+			let client2_state = state.clients.get(&client2.id).unwrap();
+			assert_eq!(client2_state.next_stream_index, 2);
+			assert_eq!(client2_state.streams.get(&client2_stream_index).unwrap(), &stream_id);
+			
+			let stream = state.streams.get(&stream_id).unwrap();
+			assert_eq!(stream.id, stream_id);
+			assert_eq!(stream.client_a.client_id, client1.id);
+			assert_eq!(stream.client_a.stream_index, client1_stream_index);
+			assert_eq!(stream.client_b.as_ref().unwrap().client_id, client2.id);
+			assert_eq!(stream.client_b.as_ref().unwrap().stream_index, client2_stream_index);
+		}
+	}
+	
+	#[test]
+	fn test_close_stream_by_client1() {
+		let server = create_server();
+		let mut client1 = server.client_connect();
+		let mut client2 = server.client_connect();
+		
+		let _ = server.create_stream(&client1).unwrap(); // make sure that stream indices are different
+		let (stream_id, client1_stream_index) = server.create_stream(&client1).unwrap();
+		let client2_stream_index = server.open_stream(stream_id, &client2).unwrap();
+		
+		assert_eq!(client1_stream_index.0, 2);
+		assert_eq!(client2_stream_index.0, 1);
+		
+		server.close_stream(client1_stream_index, &client1).unwrap();
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamOpen { index } = msg {
+			assert_eq!(index.0, 2);
+		} else {
+			assert!(false);
+		}
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamClosed { index } = msg {
+			assert_eq!(index.0, 2);
+		} else {
+			assert!(false);
+		}
+		
+		let msg = client2.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamClosed { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client1_state = state.clients.get(&client1.id).unwrap();
+			assert_eq!(client1_state.next_stream_index, 3);
+			assert!(client1_state.streams.get(&client1_stream_index).is_none());
+			
+			let client2_state = state.clients.get(&client2.id).unwrap();
+			assert_eq!(client2_state.next_stream_index, 2);
+			assert!(client2_state.streams.get(&client2_stream_index).is_none());
+			
+			assert_eq!(state.streams.len(), 1);
+		}
+	}
+	
+	#[test]
+	fn test_close_stream_by_client2() {
+		let server = create_server();
+		let mut client1 = server.client_connect();
+		let mut client2 = server.client_connect();
+		
+		let _ = server.create_stream(&client1).unwrap(); // make sure that stream indices are different
+		let (stream_id, client1_stream_index) = server.create_stream(&client1).unwrap();
+		let client2_stream_index = server.open_stream(stream_id, &client2).unwrap();
+		
+		assert_eq!(client1_stream_index.0, 2);
+		assert_eq!(client2_stream_index.0, 1);
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamOpen { index } = msg {
+			assert_eq!(index.0, 2);
+		} else {
+			assert!(false);
+		}
+		
+		server.close_stream(client2_stream_index, &client2).unwrap();
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamClosed { index } = msg {
+			assert_eq!(index.0, 2);
+		} else {
+			assert!(false);
+		}
+		
+		let msg = client2.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamClosed { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client1_state = state.clients.get(&client1.id).unwrap();
+			assert_eq!(client1_state.next_stream_index, 3);
+			assert!(client1_state.streams.get(&client1_stream_index).is_none());
+			
+			let client2_state = state.clients.get(&client2.id).unwrap();
+			assert_eq!(client2_state.next_stream_index, 2);
+			assert!(client2_state.streams.get(&client2_stream_index).is_none());
+			
+			assert_eq!(state.streams.len(), 1);
+		}
+	}
+	
+	#[test]
+	fn test_close_stream_by_client1_disconnect() {
+		let server = create_server();
+		let client1 = server.client_connect();
+		let mut client2 = server.client_connect();
+		
+		let (stream_id, _) = server.create_stream(&client1).unwrap();
+		let _ = server.open_stream(stream_id, &client2).unwrap();
+		
+		drop(client1);
+		
+		let msg = client2.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamClosed { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client2_state = state.clients.get(&client2.id).unwrap();
+			assert_eq!(client2_state.next_stream_index, 2);
+			assert_eq!(client2_state.streams.len(), 0);
+			
+			assert_eq!(state.streams.len(), 0);
+		}
+	}
+	
+	#[test]
+	fn test_close_stream_by_client2_disconnect() {
+		let server = create_server();
+		let mut client1 = server.client_connect();
+		let client2 = server.client_connect();
+		
+		let (stream_id, _) = server.create_stream(&client1).unwrap();
+		let _ = server.open_stream(stream_id, &client2).unwrap();
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamOpen { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		drop(client2);
+		
+		let msg = client1.inbox_try_next().unwrap().unwrap();
+		if let Message::StreamClosed { index } = msg {
+			assert_eq!(index.0, 1);
+		} else {
+			assert!(false);
+		}
+		
+		{
+			let state = server.shared.state.lock().unwrap();
+			
+			let client1_state = state.clients.get(&client1.id).unwrap();
+			assert_eq!(client1_state.next_stream_index, 2);
+			assert_eq!(client1_state.streams.len(), 0);
+			
+			assert_eq!(state.streams.len(), 0);
+		}
 	}
 }

@@ -1,4 +1,4 @@
-use crate::json_rpc::RequestMessage;
+use crate::json_rpc::{RequestMessage, EventMessage};
 use crate::server::json_rpc::{handle_message, handle_inbox_message};
 use crate::server::Server;
 use futures::{StreamExt,SinkExt};
@@ -15,8 +15,15 @@ async fn handle_connection(stream: TcpStream, _addr: SocketAddr, server: Server)
 		tokio::select! {
 			Some(msg) = client.inbox_next() => {
 				let response = handle_inbox_message(msg);
-				let json_string = serde_json::to_string(&response).unwrap();
-				lines.send(json_string).await?;
+				match response {
+					EventMessage::Json(json_message) => {
+						let json_string = serde_json::to_string(&json_message).unwrap();
+						lines.send(json_string).await?;
+					},
+					EventMessage::Binary(..) => {
+						// TODO
+					},
+				}
 			},
 			result = lines.next() => match result {
 				Some(Ok(line)) => {

@@ -1,3 +1,4 @@
+use crate::{StreamId, ClientStreamIndex};
 use chrono::Local;
 use colored::*;
 use serde::Serialize;
@@ -24,6 +25,12 @@ pub enum LogMessage {
 	Invoke { object: String, method: String, args: Value, invocation_id: Uuid, client: Uuid },
 	#[serde(rename_all = "camelCase")]
 	InvokeResult { invocation_id: Uuid, result: Value, client: Uuid },
+	#[serde(rename_all = "camelCase")]
+	StreamCreate { id: StreamId, index: ClientStreamIndex, client: Uuid },
+	#[serde(rename_all = "camelCase")]
+	StreamOpen { id: StreamId, index: ClientStreamIndex, client: Uuid },
+	#[serde(rename_all = "camelCase")]
+	StreamClose { id: StreamId, index: ClientStreamIndex, client: Uuid },
 }
 
 pub trait Logger {
@@ -131,6 +138,9 @@ impl Logger for StdoutLogger {
 			LogMessage::Emit { object, event, data, client } => self.print(*client, format!("emit {} {} {}", object, event, data)),
 			LogMessage::Invoke { object, method, args, invocation_id, client } => self.print(*client, format!("invoke {} {} {} {}", short_id(*invocation_id), object, method, args)),
 			LogMessage::InvokeResult { invocation_id, result, client } => self.print(*client, format!("invoke-result {} {}", short_id(*invocation_id), result)),
+			LogMessage::StreamCreate { id, index, client } => self.print(*client, format!("stream-create {} {}", short_id(id.0), index.0)),
+			LogMessage::StreamOpen { id, index, client } => self.print(*client, format!("stream-open {} {}", short_id(id.0), index.0)),
+			LogMessage::StreamClose { id, index, client } => self.print(*client, format!("stream-close {} {}", short_id(id.0), index.0)),
 		}
 	}
 }

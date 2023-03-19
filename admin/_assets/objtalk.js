@@ -4,6 +4,8 @@ const STATE_CONNECTING = "connecting";
 const STATE_OPEN = "open";
 const STATE_CLOSED = "closed";
 
+const isBinary = x => typeof x.byteLength !== "undefined";
+
 export class Connection extends EventEmitter {
 	constructor(transportFactory) {
 		super();
@@ -47,22 +49,27 @@ export class Connection extends EventEmitter {
 			}, 1000);
 		});
 		this.transport.addEventListener("message", data => {
-			data = JSON.parse(data);
-			//console.log("msg", data);
-			
-			if ("requestId" in data) {
-				if (this.requests.hasOwnProperty(data.requestId)) {
-					let { resolve, reject } = this.requests[data.requestId];
-					delete this.requests[data.requestId];
-					
-					if ("error" in data)
-						reject(data.error);
-					else
-						resolve(data.result);
-				}
-			} else if ("type" in data) {
-				if (!["open", "close"].includes(data.type)) {
-					this.dispatchEvent(data.type, data);
+			if (isBinary(data)) {
+				let view = new DataView(data);
+				let index = view.getUint32(0, true);
+				this.dispatchEvent("streamData", index, new Uint8Array(data, 4));
+			} else {
+				data = JSON.parse(data);
+				
+				if ("requestId" in data) {
+					if (this.requests.hasOwnProperty(data.requestId)) {
+						let { resolve, reject } = this.requests[data.requestId];
+						delete this.requests[data.requestId];
+						
+						if ("error" in data)
+							reject(data.error);
+						else
+							resolve(data.result);
+					}
+				} else if ("type" in data) {
+					if (!["open", "close"].includes(data.type)) {
+						this.dispatchEvent(data.type, data);
+					}
 				}
 			}
 		});
@@ -72,10 +79,14 @@ export class Connection extends EventEmitter {
 	}
 	
 	send(msg) {
+		this.sendRaw(JSON.stringify(msg));
+	}
+	
+	sendRaw(data) {
 		if (this.state != STATE_OPEN)
 			throw new Error("can't send messages in state " + this.state);
 		
-		this.transport.send(JSON.stringify(msg));
+		this.transport.send(data);
 	}
 	
 	request(msg) {
@@ -151,6 +162,17 @@ export class Connection extends EventEmitter {
 	
 	invokeResult(invocationId, result) {
 		return this.request({ type: "invokeResult", invocationId, result });
+	}
+	
+	async createStream() {
+		let { index, token } = await this.request({ type: "createStream" });
+		let stream = new Stream(index, false, this);
+		return { stream, token };
+	}
+	
+	async openStream(token) {
+		let { index } = await this.request({ type: "openStream", token });
+		return new Stream(index, true, this);
 	}
 }
 
@@ -285,11 +307,71 @@ class Query extends EventEmitter {
 	}
 }
 
+class Stream extends EventEmitter {
+	constructor(index, open, connection) {
+		super();
+		this.index = index;
+		this.state = open ? STATE_OPEN : STATE_CONNECTING;
+		this.connection = connection;
+		
+		this._onOpen = this._onOpen.bind(this);
+		this._onData = this._onData.bind(this);
+		this._onClose = this._onClose.bind(this);
+		
+		this.connection.addEventListener("close", this._onClose);
+		this.connection.addEventListener("streamOpen", this._onOpen);
+		this.connection.addEventListener("streamData", this._onData);
+		this.connection.addEventListener("streamClosed", this._onClose);
+	}
+	
+	_onOpen() {
+		this.state = STATE_OPEN;
+		this.dispatchEvent("open");
+	}
+	
+	_onData(index, data) {
+		if (index == this.index)
+			this.dispatchEvent("data", data);
+	}
+	
+	_onClose() {
+		this.state = STATE_CLOSED;
+		this.dispatchEvent("close");
+	}
+	
+	send(data) {
+		if (!isBinary(data)) {
+			throw Error("invalid data");
+		}
+		
+		let payload = new Uint8Array(4+data.byteLength);
+		let view = new DataView(payload.buffer);
+		view.setUint32(0, this.index, true);
+		payload.set(data, 4);
+		this.connection.sendRaw(payload);
+	}
+	
+	async close() {
+		if (this.state == STATE_CLOSED)
+			return;
+		
+		await this.request({ type: "closeStream", index: this.index });
+		
+		this.state = STATE_CLOSED;
+		
+		this.connection.removeEventListener("close", this._onClose);
+		this.connection.removeEventListener("streamOpen", this._onOpen);
+		this.connection.removeEventListener("streamData", this._onData);
+		this.connection.removeEventListener("streamClosed", this._onClose);
+	}
+}
+
 export class WebsocketTransport extends EventEmitter {
 	constructor(ws) {
 		super();
 		
 		this.ws = ws;
+		this.ws.binaryType = "arraybuffer";
 		this.ws.addEventListener("open", () => this.dispatchEvent("open"));
 		this.ws.addEventListener("close", () => this.dispatchEvent("close"));
 		this.ws.addEventListener("error", e => this.dispatchEvent("error", e));

@@ -1,4 +1,5 @@
-use crate::json_rpc::RequestMessage;
+use crate::ClientStreamIndex;
+use crate::json_rpc::{RequestMessage, EventMessage};
 use crate::patterns::Pattern;
 use crate::server::admin::get_admin_asset;
 use crate::server::json_rpc::{handle_message, handle_inbox_message};
@@ -72,8 +73,15 @@ async fn serve_websocket(websocket: HyperWebsocket, server: Server) -> Result<()
 		tokio::select! {
 			Some(msg) = client.inbox_next() => {
 				let response = handle_inbox_message(msg);
-				let json_string = serde_json::to_string(&response).unwrap();
-				websocket.send(WebsocketMessage::text(json_string)).await?;
+				match response {
+					EventMessage::Json(json_message) => {
+						let json_string = serde_json::to_string(&json_message).unwrap();
+						websocket.send(WebsocketMessage::text(json_string)).await?;
+					},
+					EventMessage::Binary(data) => {
+						websocket.send(WebsocketMessage::binary(data)).await?;
+					},
+				}
 			},
 			result = websocket.next() => match result {
 				Some(message) => {
@@ -89,6 +97,18 @@ async fn serve_websocket(websocket: HyperWebsocket, server: Server) -> Result<()
 							},
 							Err(_) => {
 								websocket.send(WebsocketMessage::text("{\"type\":\"error\",\"error\":\"invalid message\"}")).await?;
+							}
+						}
+					} else if let WebsocketMessage::Binary(data) = message {
+						if data.len() < 4 {
+							websocket.send(WebsocketMessage::text("{\"type\":\"error\",\"error\":\"invalid stream channel\"}")).await?;
+						} else {
+							let mut stream_index_buffer = [0u8; 4];
+							stream_index_buffer.clone_from_slice(&data[0..4]);
+							let stream_index = u32::from_le_bytes(stream_index_buffer);
+							
+							if let Err(err) = server.stream_send(ClientStreamIndex(stream_index), &data[4..], &client) {
+								websocket.send(WebsocketMessage::text("{\"type\":\"error\",\"error\":\"".to_owned()+&err.to_string()+"\"}")).await?;
 							}
 						}
 					}
@@ -277,6 +297,9 @@ impl RequestHandler {
 						if query_id == msg_query_id { Some(event("event", json!({ "object": object, "event": event_name, "data": data }))) } else { None },
 					Message::QueryInvocation { .. } => unreachable!(),
 					Message::InvocationResult { .. } => unreachable!(),
+					Message::StreamOpen { .. } => unreachable!(), // TODO?
+					Message::StreamClosed { .. } => unreachable!(), // TODO?
+					Message::StreamData { .. } => unreachable!(), // TODO?
 				};
 				
 				if let Some(msg) = out {

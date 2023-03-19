@@ -1,4 +1,4 @@
-use crate::{Object, Command};
+use crate::{Object, Command, ClientStreamIndex};
 use serde::{Serialize,Deserialize};
 use serde_json::Value;
 use uuid::Uuid;
@@ -54,6 +54,16 @@ pub enum Request {
 	SetDisconnectCommands {
 		commands: Vec<Command>,
 	},
+	#[serde(rename = "createStream")]
+	CreateStream {},
+	#[serde(rename = "openStream")]
+	OpenStream {
+		token: String,
+	},
+	#[serde(rename = "closeStream")]
+	CloseStream {
+		index: u32,
+	},
 }
 
 #[derive(Serialize, Debug)]
@@ -72,7 +82,14 @@ pub enum Response {
 	},
 	Remove {
 		existed: bool,
-	}
+	},
+	CreateStream {
+		index: u32,
+		token: String,
+	},
+	OpenStream {
+		index: u32,
+	},
 }
 
 #[derive(Deserialize, Debug)]
@@ -95,7 +112,7 @@ pub struct ResponseMessage {
 #[derive(Serialize, Debug)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
-pub enum EventMessage {
+pub enum JsonMessage {
 	#[serde(rename_all = "camelCase")]
 	QueryAdd {
 		query_id: Uuid,
@@ -134,5 +151,18 @@ pub enum EventMessage {
 		result: Option<Value>,
 		#[serde(skip_serializing_if = "Option::is_none")]
 		error: Option<String>,
-	}
+	},
+	#[serde(rename_all = "camelCase")]
+	StreamOpen {
+		index: ClientStreamIndex,
+	},
+	#[serde(rename_all = "camelCase")]
+	StreamClosed {
+		index: ClientStreamIndex,
+	},
+}
+
+pub enum EventMessage {
+	Json(JsonMessage),
+	Binary(Vec<u8>),
 }

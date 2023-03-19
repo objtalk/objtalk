@@ -77,6 +77,12 @@ function renderLogMessage(elem, message, colorer) {
 			elem.querySelector(".log-message-invocation").innerText = shortId(message.invocationId);
 			elem.querySelector(".log-message-result").innerText = JSON.stringify(message.result);
 			break;
+		case "streamCreate":
+		case "streamOpen":
+		case "streamClose":
+			elem.querySelector(".log-message-id").innerText = shortId(message.id);
+			elem.querySelector(".log-message-index").innerText = message.index;
+			break;
 	}
 }
 
@@ -95,6 +101,9 @@ export default class LogPage {
 			"emit": template("template-log-message-emit"),
 			"invoke": template("template-log-message-invoke"),
 			"invokeResult": template("template-log-message-invoke-result"),
+			"streamCreate": template("template-log-message-stream-create"),
+			"streamOpen": template("template-log-message-stream-open"),
+			"streamClose": template("template-log-message-stream-close"),
 		}
 		this.elements = [];
 		this.waitingMessages = [];

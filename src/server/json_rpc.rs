@@ -1,3 +1,5 @@
+use uuid::Uuid;
+use crate::{StreamId, ClientStreamIndex};
 use crate::json_rpc::*;
 use crate::patterns::Pattern;
 use crate::server::{Server, Client, Message};
@@ -67,6 +69,26 @@ fn handle_request(request: Request, request_id: Value, client: &Client, server: 
 			
 			Ok(Some(Response::Success { success: true }))
 		},
+		Request::CreateStream {} => {
+			let (token, index) = server.create_stream(client)
+				.map_err(|e| e.to_string())?;
+			
+			Ok(Some(Response::CreateStream { token: token.0.to_string(), index: index.0 }))
+		},
+		Request::OpenStream { token } => {
+			let token = Uuid::parse_str(&token).map_err(|_| "invalid stream token".to_string())?;
+			
+			let index = server.open_stream(StreamId(token), client)
+				.map_err(|e| e.to_string())?;
+			
+			Ok(Some(Response::OpenStream { index: index.0 }))
+		},
+		Request::CloseStream { index } => {
+			server.close_stream(ClientStreamIndex(index), client)
+				.map_err(|e| e.to_string())?;
+			
+			Ok(Some(Response::Success { success: true }))
+		},
 	}
 }
 
@@ -92,12 +114,15 @@ pub fn handle_message(req: RequestMessage, client: &Client, server: Server) -> O
 
 pub fn handle_inbox_message(msg: Message) -> EventMessage {
 	match msg {
-		Message::QueryAdd { query_id, object } => EventMessage::QueryAdd { query_id, object },
-		Message::QueryChange { query_id, object } => EventMessage::QueryChange { query_id, object },
-		Message::QueryRemove { query_id, object } => EventMessage::QueryRemove { query_id, object },
-		Message::QueryEvent { query_id, object, event, data } => EventMessage::QueryEvent { query_id, object, event, data },
-		Message::QueryInvocation { query_id, invocation_id, object, method, args } => EventMessage::QueryInvocation { query_id, invocation_id, object, method, args },
-		Message::InvocationResult { request_id, result: Ok(result) } => EventMessage::InvocationResult { request_id, result: Some(result), error: None },
-		Message::InvocationResult { request_id, result: Err(error) } => EventMessage::InvocationResult { request_id, result: None, error: Some(error.to_string()) },
+		Message::QueryAdd { query_id, object } => EventMessage::Json(JsonMessage::QueryAdd { query_id, object }),
+		Message::QueryChange { query_id, object } => EventMessage::Json(JsonMessage::QueryChange { query_id, object }),
+		Message::QueryRemove { query_id, object } => EventMessage::Json(JsonMessage::QueryRemove { query_id, object }),
+		Message::QueryEvent { query_id, object, event, data } => EventMessage::Json(JsonMessage::QueryEvent { query_id, object, event, data }),
+		Message::QueryInvocation { query_id, invocation_id, object, method, args } => EventMessage::Json(JsonMessage::QueryInvocation { query_id, invocation_id, object, method, args }),
+		Message::InvocationResult { request_id, result: Ok(result) } => EventMessage::Json(JsonMessage::InvocationResult { request_id, result: Some(result), error: None }),
+		Message::InvocationResult { request_id, result: Err(error) } => EventMessage::Json(JsonMessage::InvocationResult { request_id, result: None, error: Some(error.to_string()) }),
+		Message::StreamOpen { index } => EventMessage::Json(JsonMessage::StreamOpen { index }),
+		Message::StreamClosed { index } => EventMessage::Json(JsonMessage::StreamClosed { index }),
+		Message::StreamData { data, .. } => EventMessage::Binary(data),
 	}
 }
