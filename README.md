@@ -3,7 +3,7 @@
 [![Documentation](https://docs.rs/objtalk/badge.svg)](https://docs.rs/objtalk)
 [![Automated Builds](https://github.com/objtalk/objtalk/actions/workflows/build.yaml/badge.svg)](https://github.com/objtalk/objtalk/actions/workflows/build.yaml)
 
-objtalk is a lightweight realtime database that can be used for IoT projects. It can be used to store and query the state of devices in realtime and also to communicate between devices using events and rpc. Think mqtt but on steroids.
+objtalk is a lightweight realtime database that can be used for IoT projects. It can be used to store and query the state of devices in realtime and also to communicate between devices using streams, events and rpc. Think mqtt but on steroids.
 
 objtalk stores objects. Each object has a name, a value (json) and a timestamp that indicates when the object was last modified. Objects can be created, modified, removed and queried over an API. Queries can also watch for changes and return them in real time to the client.
 
@@ -543,6 +543,8 @@ over http: unsupported
 over tcp or websocket:
 
 ```json
+// on client A
+
 {
     "id": 1,
     "type": "createStream"
@@ -568,6 +570,8 @@ over http: unsupported
 over tcp or websocket:
 
 ```json
+// on client B
+
 {
     "id": 1,
     "type": "openStream",
@@ -577,9 +581,11 @@ over tcp or websocket:
 {
     "requestId": 1,
     "result": {
-        "index": 1
+        "index": 2
     }
 }
+
+// on client A
 
 {
     "type": "streamOpen",
@@ -598,6 +604,8 @@ over http: unsupported
 over tcp or websocket:
 
 ```json
+// on client A
+
 {
     "id": 1,
     "type": "closeStream",
@@ -611,8 +619,10 @@ over tcp or websocket:
     }
 }
 
+// on client B
+
 {
     "type": "streamClosed",
-    "index": 1
+    "index": 2
 }
 ```
